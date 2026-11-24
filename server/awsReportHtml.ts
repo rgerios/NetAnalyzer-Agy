@@ -74,6 +74,25 @@ function barList(rows: Array<{ label: string; value: number; right?: string; bad
     .join('')}</ul>`;
 }
 
+/** Pirâmide em SVG estático (barras centralizadas) com linha laranja sobre o topo de cada faixa. */
+function pyramidSvg(rows: Array<{ label: string; value: number; bad?: boolean }>): string {
+  if (rows.length === 0 || rows.every((r) => r.value === 0)) return '';
+  const W = 320, LABEL_W = 64, VALUE_W = 44, ROW_H = 24, BAR_H = 16;
+  const innerW = W - LABEL_W - VALUE_W;
+  const cx = LABEL_W + innerW / 2;
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  const wOf = (v: number) => (v > 0 ? Math.max(3, (v / max) * innerW) : 0);
+  const pts = rows.map((r, i) => ({ x: cx + wOf(r.value) / 2, y: i * ROW_H + 2 + ROW_H / 2 }));
+  const items = rows
+    .map((r, i) => {
+      const w = wOf(r.value);
+      return `<text x="0" y="${(pts[i].y + 3.5).toFixed(1)}" font-size="10" fill="#5f6b7a">${esc(r.label)}</text><rect x="${(cx - w / 2).toFixed(1)}" y="${(i * ROW_H + 2 + (ROW_H - BAR_H) / 2).toFixed(1)}" width="${w.toFixed(1)}" height="${BAR_H}" rx="2" fill="${r.bad ? '#ef4444' : '#0972d3'}" fill-opacity=".6"/><text x="${W}" y="${(pts[i].y + 3.5).toFixed(1)}" font-size="10" text-anchor="end" fill="#5f6b7a">${esc(nf(r.value))}</text>`;
+    })
+    .join('');
+  const line = `<polyline points="${pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="#ff9900" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${pts.map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5" fill="#ff9900"/>`).join('')}`;
+  return `<svg viewBox="0 0 ${W} ${rows.length * ROW_H + 4}" width="100%" role="img" aria-label="Pirâmide da distribuição do tempo total" style="max-width:420px;margin:4px 0 10px">${items}${line}</svg>`;
+}
+
 function albSection(ins: HttpInsights): string {
   const errPct = pct(ins.status.s5xx, ins.requests);
   const b = ins.timeBreakdown;
@@ -96,7 +115,7 @@ ${kpi('Tráfego HTTP', formatBytes(ins.bytes.in + ins.bytes.out), `↑ ${formatB
 <div class="stack">${parts.map((p) => `<i style="width:${(p.value / tot) * 100}%;background:${p.color}"></i>`).join('')}</div>
 <ul class="bl">${parts.map((p) => `<li><div class="row"><span><span class="dot" style="background:${p.color}"></span>${esc(p.label)}</span><span class="muted">${fmtMs(p.value)}</span></div></li>`).join('')}</ul>
 <p class="note">Média por requisição. Aplicação p95: ${fmtMs(ins.latency.targetP95Ms)}.${ins.clientSlow > 0 ? ` ${nf(ins.clientSlow)} requisição(ões) levaram 1 s ou mais só para o cliente enviar o corpo (rede lenta ou upload grande), e não por lentidão do servidor.` : ''}</p></div>
-<div><h3>Distribuição do tempo total</h3>${barList(ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 })))}</div>
+<div><h3>Distribuição do tempo total</h3>${pyramidSvg(ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 })))}${barList(ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 })))}</div>
 </div>
 <div class="two">
 <div><h3>Status HTTP</h3>${barList(ins.status.top.map((s) => ({ label: s.code, value: s.count, bad: s.code.startsWith('5') })))}</div>

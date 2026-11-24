@@ -103,6 +103,47 @@ export function HttpPanel({ title, children, wide }: { title: string; children: 
   );
 }
 
+/** Pirâmide (barras centralizadas, largura proporcional) com uma linha laranja ligando o topo de cada faixa. */
+export function LatencyPyramid({ rows }: { rows: Array<{ label: string; value: number; bad?: boolean }> }) {
+  if (rows.length === 0 || rows.every((r) => r.value === 0)) return null;
+  const W = 320;
+  const LABEL_W = 64;
+  const VALUE_W = 44;
+  const ROW_H = 24;
+  const BAR_H = 16;
+  const innerW = W - LABEL_W - VALUE_W;
+  const cx = LABEL_W + innerW / 2;
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  const H = rows.length * ROW_H + 4;
+  const widthOf = (v: number) => (v > 0 ? Math.max(3, (v / max) * innerW) : 0);
+  const points = rows.map((r, i) => ({ x: cx + widthOf(r.value) / 2, y: i * ROW_H + 2 + ROW_H / 2 }));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto mb-3" role="img" aria-label="Pirâmide da distribuição do tempo total">
+      {rows.map((r, i) => {
+        const w = widthOf(r.value);
+        const y = i * ROW_H + 2 + (ROW_H - BAR_H) / 2;
+        return (
+          <g key={r.label}>
+            <text x={0} y={points[i].y + 3.5} fontSize={10} fill="var(--fw-text-muted)">
+              {r.label}
+            </text>
+            <rect x={cx - w / 2} y={y} width={w} height={BAR_H} rx={2} fill={r.bad ? '#ef4444' : '#0972D3'} fillOpacity={0.6}>
+              <title>{`${r.label}: ${nf(r.value)} requisições`}</title>
+            </rect>
+            <text x={W} y={points[i].y + 3.5} fontSize={10} textAnchor="end" fill="var(--fw-text-muted)" className="tabular-nums">
+              {nf(r.value)}
+            </text>
+          </g>
+        );
+      })}
+      <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#FF9900" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+      {points.map((p, i) => (
+        <circle key={rows[i].label} cx={p.x} cy={p.y} r={2.5} fill="#FF9900" />
+      ))}
+    </svg>
+  );
+}
+
 function TimeBreakdown({ ins }: { ins: HttpInsights }) {
   const b = ins.timeBreakdown;
   const total = Math.max(1, b.requestMs + b.targetMs + b.responseMs);
@@ -262,6 +303,7 @@ export function HttpInsightsSection({ ins }: { ins: HttpInsights }) {
           <TimeBreakdown ins={ins} />
         </HttpPanel>
         <HttpPanel title="Distribuição do tempo total">
+          <LatencyPyramid rows={ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 }))} />
           <BarList rows={ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 }))} />
           <p className="mt-3 text-[11px] text-[var(--fw-text-muted)]">Tempo total = envio pelo cliente + aplicação + resposta. Faixas a partir de 2 s em vermelho.</p>
         </HttpPanel>
