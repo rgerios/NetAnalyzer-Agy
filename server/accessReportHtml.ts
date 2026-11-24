@@ -1,3 +1,5 @@
+import type { ReportBranding } from '../shared/branding.ts';
+import { BRAND_CSS, brandedTitle, renderBrandHeader } from './reportBranding.ts';
 import type { AccessReportData } from '../shared/accessReport.ts';
 
 /**
@@ -88,7 +90,7 @@ function timelineSvg(report: AccessReportData): string {
 <p class="legend"><span><i style="background:#0ea5e9"></i>Download</span><span><i style="background:#8b5cf6"></i>Upload</span><span class="muted">Mbps, média por hora</span></p>`;
 }
 
-export function renderAccessReportHtml(report: AccessReportData, siteName: string, brand: { label: string; accent: string }): string {
+export function renderAccessReportHtml(report: AccessReportData, siteName: string, brand: { label: string; accent: string }, branding?: ReportBranding): string {
   const t = report.totals;
   const maxSrc = report.sources[0]?.totalBytes ?? 0;
   const maxCat = report.categories[0]?.connections ?? 0;
@@ -138,7 +140,7 @@ export function renderAccessReportHtml(report: AccessReportData, siteName: strin
 
   return `<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Acessos e Consumo — ${esc(siteName)} — ${esc(when(report.periodEnd))}</title>
+<title>${esc(brandedTitle(branding, `Acessos e Consumo — ${siteName}`))} — ${esc(when(report.periodEnd))}</title>
 <style>
 :root{--ink:#14202e;--muted:#6b7686;--line:#e5e9f0;--soft:#f5f7fa;--accent:${accent}}
 *{box-sizing:border-box}body{margin:0;background:#eef1f6;color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
@@ -161,7 +163,9 @@ ul.l{list-style:none;margin:0;padding:0}ul.l li{margin-bottom:10px}.row{display:
 footer{padding:16px 36px 24px;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}
 @media(max-width:760px){.kpis{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}main,header{padding-left:18px;padding-right:18px}.page{margin:0;border-radius:0}table{display:block;overflow-x:auto}}
 @media print{body{background:#fff}.page{box-shadow:none;margin:0;border-radius:0}header{-webkit-print-color-adjust:exact;print-color-adjust:exact}section{break-inside:avoid}}
+${BRAND_CSS}.page>.brand-head{margin:0;padding:24px 36px;border-bottom:3px solid var(--accent)}
 </style></head><body><div class="page">
+${renderBrandHeader(branding, 'Acessos e Consumo')}
 <header><div class="brand">NetAnalyzer · ${esc(brand.label)} · Acessos e Consumo</div>
 <h1>${esc(siteName)}</h1>
 <p>Últimos ${esc(periodText(report.minutes))} · ${esc(when(report.periodStart ?? report.generatedAt))} até ${esc(when(report.periodEnd))} · ${num(report.analyzedEvents)} eventos de tráfego${report.coveragePct < 100 ? ` · detalhe cobre ${report.coveragePct}% (maiores fluxos)` : ''}</p></header>

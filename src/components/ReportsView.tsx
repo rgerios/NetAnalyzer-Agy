@@ -1,4 +1,5 @@
 import { AwsReportsView } from './AwsReportsView.tsx';
+import { ReportBrandingPanel } from './ReportBrandingPanel.tsx';
 import { useEffect, useState } from 'react';
 import { AccessReportView } from './AccessReportView.tsx';
 import {
@@ -524,10 +525,16 @@ function AuditReportView({
 export function ReportsView(props: ReportsViewProps) {
   const [tab, setTab] = useState<'audit' | 'access'>('audit');
   if (props.vendor === 'aws') {
-    return <AwsReportsView vendor={props.vendor} refreshToken={props.refreshToken} />;
+    return (
+      <div className="space-y-4">
+        <ReportBrandingPanel vendor={props.vendor} />
+        <AwsReportsView vendor={props.vendor} refreshToken={props.refreshToken} />
+      </div>
+    );
   }
   return (
     <div className="space-y-4">
+      <ReportBrandingPanel vendor={props.vendor} />
       <div className="no-print inline-flex p-1 bg-[var(--fw-surface-alt)] rounded-lg" role="tablist" aria-label="Tipo de relatório">
         {(
           [

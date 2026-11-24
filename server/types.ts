@@ -1,3 +1,4 @@
+import type { ReportBranding } from '../shared/branding.ts';
 import type { AwsSourceConfig } from '../shared/aws.ts';
 import type {
   AiProviderType,
@@ -73,6 +74,8 @@ export interface FirewallSiteRecord {
   configChanges: ConfigChangeEntry[];
   /** Início da janela em que os contadores de uso por syslog vêm sendo acumulados. */
   hitsObservedSince: string | null;
+  /** Identidade do cliente nos relatórios (nome, logo, quem preparou). */
+  branding?: ReportBranding;
   /** Amostras de telemetria (modo JSON local; com PostgreSQL ficam na tabela metrics). */
   metrics?: MetricSample[];
   createdAt: string;

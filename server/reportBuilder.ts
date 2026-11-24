@@ -1,3 +1,5 @@
+import type { ReportBranding } from '../shared/branding.ts';
+import { BRAND_CSS, brandedTitle, renderBrandHeader } from './reportBranding.ts';
 import { generateFortiOsCli } from './fortigateParsers.ts';
 import { generateSonicOsCli } from './parsers.ts';
 import type {
@@ -255,7 +257,7 @@ export function renderReportMarkdown(report: AuditReportData): string {
   return lines.join('\n');
 }
 
-export function renderReportHtml(report: AuditReportData): string {
+export function renderReportHtml(report: AuditReportData, branding?: ReportBranding): string {
   const { overview } = report;
   const issueRules =
     overview.rulesSummary.unused +
@@ -414,7 +416,7 @@ export function renderReportHtml(report: AuditReportData): string {
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <title>NetAnalyzer — Relatório ${escapeHtml(vendorLabel)} — ${escapeHtml(ap.model)}</title>
+  <title>${escapeHtml(brandedTitle(branding, `NetAnalyzer — Relatório ${vendorLabel} — ${ap.model}`))}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: ${theme.bg}; color: ${theme.text}; margin: 0; padding: 32px; line-height: 1.5; }
     .container { max-width: 1120px; margin: 0 auto; background: #ffffff; border: 1px solid ${theme.border}; border-radius: 10px; padding: 32px; }
@@ -431,11 +433,14 @@ export function renderReportHtml(report: AuditReportData): string {
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
     .num { font-family: ui-monospace, monospace; text-align: right; }
     pre { background: ${theme.preBg}; color: ${theme.preText}; padding: 16px; border-radius: 8px; font-size: 11px; overflow-x: auto; font-family: ui-monospace, monospace; }
+    ${BRAND_CSS}
+    .container > .brand-head { --brand-accent: ${theme.accent}; }
     @media print { body { background: #fff; padding: 0; } .container { border: none; padding: 0; } }
   </style>
 </head>
 <body>
   <div class="container">
+    ${renderBrandHeader(branding, `Relatório Consolidado ${vendorLabel}`)}
     <h1>NetAnalyzer — Relatório Consolidado ${escapeHtml(vendorLabel)}</h1>
     <div class="meta">
       Gerado em ${escapeHtml(new Date(report.generatedAt).toLocaleString('pt-BR'))} ·

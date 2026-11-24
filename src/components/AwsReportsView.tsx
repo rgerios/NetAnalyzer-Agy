@@ -78,6 +78,12 @@ function ResourceReport({ vendor, kind, refreshToken }: { vendor: FirewallVendor
           <button type="button" onClick={exportCsv} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-[var(--fw-border-strong)] rounded-md">
             <Download className="w-3.5 h-3.5" /> CSV
           </button>
+          <a href={vendorApiUrl(vendor, `/cloud/report/html?minutes=${minutes}&sections=${kind === 'alb' ? 'alb,albconn' : kind}`)} download className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-[var(--fw-border-strong)] rounded-md">
+            <Download className="w-3.5 h-3.5" /> HTML desta aba
+          </a>
+          <a href={vendorApiUrl(vendor, `/cloud/report/html?minutes=${minutes}`)} download className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-[var(--fw-accent)] rounded-md">
+            <Download className="w-3.5 h-3.5" /> Relatório de entrega (HTML completo)
+          </a>
           <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-[var(--fw-border-strong)] rounded-md">
             <Printer className="w-3.5 h-3.5" /> Imprimir / PDF
           </button>

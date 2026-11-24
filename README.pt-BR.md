@@ -187,6 +187,8 @@ Envie capturas do Wireshark ou tcpdump e depure com **filtros de exibição no e
 
 <img src="docs/screenshots/reports-access.png" alt="Relatório de acessos e consumo com agendador" width="100%">
 
+**Relatórios de entrega (HTML):** informe uma vez, por localidade/conta, o nome do cliente, o logo e o "preparado por" (Relatórios → *Identidade do relatório*) e todos os relatórios em HTML — auditoria, acessos e consumo e o relatório de entrega da AWS (ALB, conexões TLS, VPC Flow Logs, WAF) — saem com cabeçalho personalizado. O logo é validado (só PNG/JPEG/WebP, até 300 KB, sem SVG).
+
 **Acessos e Consumo** responde *quem acessou o quê, para onde e quanta banda usou*:
 IPs, categorias, países, ASNs e destinos mais acessados, linha do tempo de banda por hora e consumo por IP.
 

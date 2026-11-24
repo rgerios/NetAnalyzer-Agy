@@ -18,6 +18,10 @@ import { buildPortStats, buildPortStatsFromGroups, filterEventsByPort, filterGro
 import { createIntel } from './intel.ts';
 import { aggregateEventsInMemory, buildAccessReport } from './accessReport.ts';
 import { createScheduledReports } from './scheduledReports.ts';
+import { renderAccessReportHtml } from './accessReportHtml.ts';
+import { renderAwsReportHtml, type AwsReportData, type AwsReportSection } from './awsReportHtml.ts';
+import { EMPTY_BRANDING } from '../shared/branding.ts';
+import { applyBranding, BrandingError, sanitizeStoredBranding } from './reportBranding.ts';
 import { getSharedResolver } from './rdns.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -78,6 +82,7 @@ import {
   renderReportMarkdown,
 } from './reportBuilder.ts';
 import { buildHttpInsights, rowsFromAlbEvents } from './httpInsights.ts';
+import type { HttpInsights } from '../shared/httpInsights.ts';
 import {
   bucketSecondsFor,
   FACETS,
@@ -246,6 +251,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
       consecutiveSyncFailures: 0,
       configChanges: [],
       hitsObservedSince: null,
+      branding: { ...EMPTY_BRANDING },
       metrics: [],
       createdAt: now,
       updatedAt: now,
@@ -708,6 +714,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
         typeof raw.consecutiveSyncFailures === 'number' ? raw.consecutiveSyncFailures : 0,
       configChanges: Array.isArray(raw.configChanges) ? raw.configChanges : [],
       hitsObservedSince: raw.hitsObservedSince ?? null,
+      branding: sanitizeStoredBranding(raw.branding),
       metrics: Array.isArray(raw.metrics) ? raw.metrics : [],
       createdAt: raw.createdAt || base.createdAt,
       updatedAt: raw.updatedAt || base.updatedAt,
@@ -2011,6 +2018,49 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
     })
   );
 
+  // Identidade do cliente nos relatórios de entrega (nome, logo, quem preparou)
+  router.get('/branding', (req, res) => {
+    res.json(siteFor(req).branding ?? { ...EMPTY_BRANDING });
+  });
+
+  router.put(
+    '/branding',
+    asyncRoute(async (req, res) => {
+      const site = siteFor(req);
+      try {
+        site.branding = applyBranding(site.branding, (req.body ?? {}) as Record<string, unknown>);
+      } catch (err) {
+        if (err instanceof BrandingError) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+      site.updatedAt = new Date().toISOString();
+      schedulePersist();
+      res.json(site.branding);
+    })
+  );
+
+  // Relatório de acessos e consumo em HTML (download direto), com a identidade do cliente
+  router.get(
+    '/access-report/html',
+    asyncRoute(async (req, res) => {
+      const raw = Number(req.query.minutes ?? 1440);
+      const minutes = Number.isFinite(raw) && raw > 0 ? Math.min(43200, Math.floor(raw)) : 1440;
+      const site = siteFor(req);
+      const report = await computeAccessReport(site, minutes);
+      const brand = isAws
+        ? { label: 'AWS', accent: '#0f766e' }
+        : vendor === 'fortigate'
+          ? { label: 'FortiGate', accent: '#da291c' }
+          : { label: 'SonicWall', accent: '#e8590c' };
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="netanalyzer-acessos-${new Date().toISOString().slice(0, 10)}.html"`);
+      res.send(renderAccessReportHtml(report, site.name, brand, site.branding));
+    })
+  );
+
   // Agendamento: gera o relatório em HTML estático no horário escolhido e deixa pronto para baixar
   const scheduled = createScheduledReports({
     dataDir,
@@ -2019,6 +2069,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
       : vendor === 'fortigate'
         ? { label: 'FortiGate', accent: '#da291c' }
         : { label: 'SonicWall', accent: '#e8590c' },
+    getBranding: (siteId) => store.sites[siteId]?.branding,
     listSites: () => Object.values(store.sites).map((s) => ({ id: s.id, name: s.name })),
     generate: (siteId, minutes) => {
       const site = store.sites[siteId];
@@ -2123,7 +2174,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="fwaudit-${slug}-${stamp}.html"`);
-    res.send(renderReportHtml(report));
+    res.send(renderReportHtml(report, site.branding));
   });
 
   // --- Syslogs ---------------------------------------------------------------
@@ -2959,6 +3010,100 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
       })
     );
 
+    async function computeFacets(site: FirewallSiteRecord, kind: AwsLogKind, minutes: number): Promise<FacetReport> {
+    const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
+    const memoryEvents = sinceIso
+      ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
+      : site.syslogs;
+    const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
+    const needDb =
+      usePg &&
+      (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
+    const bucketSec = bucketSecondsFor(minutes);
+    let result = facetsFromEvents(memoryEvents, kind, bucketSec);
+    let dataSource: 'memory' | 'database' = 'memory';
+    if (needDb) {
+      const specs = FACETS[kind];
+      const agg = await cachedAggregate(`facets|${kind}|${site.id}|${minutes}`, aggTtl(minutes), () =>
+        pgStore.aggregateFacets(site.id, sinceIso ?? new Date(0).toISOString(), KIND_CATEGORY[kind], specs, bucketSec, KIND_SQL_FILTER[kind] ?? '')
+      );
+      if (!agg.timedOut) {
+        dataSource = 'database';
+        result = {
+          totals: agg.totals,
+          timeline: agg.timeline,
+          facets: specs.map((s) => ({
+            id: s.id, title: s.title, hint: s.hint, metric: s.metric ?? 'count', ip: s.ip, country: s.country, port: s.port,
+            items: agg.items[s.id] ?? [],
+          })),
+        };
+      }
+    }
+    // país de cada IP (base offline), para a tela mostrar a bandeira
+    for (const f of result.facets) {
+      if (!f.ip) continue;
+      for (const it of f.items) it.country = intel.lookup(it.key).country;
+    }
+    const report: FacetReport = { kind, minutes, generatedAt: new Date().toISOString(), dataSource, ...result };
+    return report;
+    }
+
+    async function computeHttpInsights(site: FirewallSiteRecord, minutes: number): Promise<HttpInsights> {
+    const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
+    const memoryEvents = sinceIso
+      ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
+      : site.syslogs;
+    const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
+    const needDb =
+      usePg &&
+      (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
+    const bucketSec = bucketSecondsFor(minutes);
+    let rows = rowsFromAlbEvents(memoryEvents, bucketSec);
+    let dataSource: 'memory' | 'database' = 'memory';
+    let truncated = false;
+    if (needDb) {
+      const agg = await cachedAggregate(`http|${site.id}|${minutes}`, aggTtl(minutes), () =>
+        pgStore.aggregateHttpInsights(site.id, sinceIso ?? new Date(0).toISOString(), 100_000, bucketSec)
+      );
+      if (agg.timedOut) {
+        truncated = true;
+      } else {
+        rows = { groups: agg.groups, clients: agg.clients, extras: agg.extras };
+        truncated = agg.capped;
+        dataSource = 'database';
+      }
+    }
+    return buildHttpInsights({ ...rows, minutes, dataSource, truncated });
+    }
+
+    // Relatório de entrega em HTML (ALB, conexões TLS, VPC Flow Logs e WAF) com a identidade do cliente
+    router.get(
+      '/cloud/report/html',
+      asyncRoute(async (req, res) => {
+        const site = siteFor(req);
+        const minutes = radarMinutes(req) || 60;
+        const wanted = String(req.query.sections || 'alb,albconn,vpcflow,waf')
+          .split(',')
+          .map((x) => x.trim())
+          .filter((x): x is AwsReportSection => x === 'alb' || x === 'albconn' || x === 'vpcflow' || x === 'waf');
+        const sections = wanted.length > 0 ? wanted : (['alb', 'albconn', 'vpcflow', 'waf'] as AwsReportSection[]);
+        const data: AwsReportData = {
+          minutes,
+          generatedAt: new Date().toISOString(),
+          accountId: /^\d{12}$/.test(site.appliance.serialNumber) ? site.appliance.serialNumber : undefined,
+          region: site.connection.aws?.region,
+        };
+        for (const s of sections) {
+          if (s === 'alb') data.alb = await computeHttpInsights(site, minutes);
+          else data[s] = await computeFacets(site, s, minutes);
+        }
+        const stamp = new Date().toISOString().slice(0, 10);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="netanalyzer-aws-${sections.length === 1 ? sections[0] : 'completo'}-${stamp}.html"`);
+        res.send(renderAwsReportHtml(data, sections, site.name, site.branding));
+      })
+    );
+
     // Facetas por tipo de log (VPC Flow Logs e WAF): top N de cada campo, totais e linha do tempo
     router.get(
       '/cloud/facets',
@@ -2969,42 +3114,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
           res.status(400).json({ error: 'Informe kind=vpcflow, waf ou albconn.' });
           return;
         }
-        const minutes = radarMinutes(req);
-        const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-        const memoryEvents = sinceIso
-          ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-          : site.syslogs;
-        const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
-        const needDb =
-          usePg &&
-          (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
-        const bucketSec = bucketSecondsFor(minutes);
-        let result = facetsFromEvents(memoryEvents, kind, bucketSec);
-        let dataSource: 'memory' | 'database' = 'memory';
-        if (needDb) {
-          const specs = FACETS[kind];
-          const agg = await cachedAggregate(`facets|${kind}|${site.id}|${minutes}`, aggTtl(minutes), () =>
-            pgStore.aggregateFacets(site.id, sinceIso ?? new Date(0).toISOString(), KIND_CATEGORY[kind], specs, bucketSec, KIND_SQL_FILTER[kind] ?? '')
-          );
-          if (!agg.timedOut) {
-            dataSource = 'database';
-            result = {
-              totals: agg.totals,
-              timeline: agg.timeline,
-              facets: specs.map((s) => ({
-                id: s.id, title: s.title, hint: s.hint, metric: s.metric ?? 'count', ip: s.ip, country: s.country, port: s.port,
-                items: agg.items[s.id] ?? [],
-              })),
-            };
-          }
-        }
-        // país de cada IP (base offline), para a tela mostrar a bandeira
-        for (const f of result.facets) {
-          if (!f.ip) continue;
-          for (const it of f.items) it.country = intel.lookup(it.key).country;
-        }
-        const report: FacetReport = { kind, minutes, generatedAt: new Date().toISOString(), dataSource, ...result };
-        res.json(report);
+        res.json(await computeFacets(site, kind, radarMinutes(req)));
       })
     );
 
@@ -3043,32 +3153,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
       '/cloud/http-insights',
       asyncRoute(async (req, res) => {
         const site = siteFor(req);
-        const minutes = radarMinutes(req);
-        const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-        const memoryEvents = sinceIso
-          ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-          : site.syslogs;
-        const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
-        const needDb =
-          usePg &&
-          (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
-        const bucketSec = bucketSecondsFor(minutes);
-        let rows = rowsFromAlbEvents(memoryEvents, bucketSec);
-        let dataSource: 'memory' | 'database' = 'memory';
-        let truncated = false;
-        if (needDb) {
-          const agg = await cachedAggregate(`http|${site.id}|${minutes}`, aggTtl(minutes), () =>
-            pgStore.aggregateHttpInsights(site.id, sinceIso ?? new Date(0).toISOString(), 100_000, bucketSec)
-          );
-          if (agg.timedOut) {
-            truncated = true;
-          } else {
-            rows = { groups: agg.groups, clients: agg.clients, extras: agg.extras };
-            truncated = agg.capped;
-            dataSource = 'database';
-          }
-        }
-        res.json(buildHttpInsights({ ...rows, minutes, dataSource, truncated }));
+        res.json(await computeHttpInsights(site, radarMinutes(req)));
       })
     );
 

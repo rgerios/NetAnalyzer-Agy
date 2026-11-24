@@ -188,6 +188,8 @@ Upload captures from Wireshark or tcpdump and debug with **Wireshark-style displ
 
 <img src="docs/screenshots/reports-access.png" alt="Access and consumption report with scheduler" width="100%">
 
+**Delivery reports (HTML):** set the client's name, logo and "prepared by" once per site/account (Reports → *Report identity*) and every HTML report — audit, access & consumption and the AWS delivery report (ALB, TLS connections, VPC Flow Logs, WAF) — gets a branded header. Logos are validated (PNG/JPEG/WebP only, ≤ 300 KB, no SVG).
+
 **Access & Consumption** answers *who accessed what, to where, and how much bandwidth it used*:
 top IPs, categories, countries, ASNs, destinations, hourly bandwidth timeline and per-IP consumption.
 

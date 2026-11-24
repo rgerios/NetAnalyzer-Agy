@@ -702,6 +702,7 @@ export class PostgresStore {
           consecutiveSyncFailures: site.consecutiveSyncFailures,
           configChanges: site.configChanges,
           hitsObservedSince: site.hitsObservedSince,
+          branding: site.branding,
         };
         await client.query(
           `

@@ -327,6 +327,9 @@ export function AccessReportView({ vendor, refreshToken }: AccessReportViewProps
           <button type="button" disabled={!report} onClick={exportDestinations} className={btn}>
             <Download className="w-3.5 h-3.5" /> CSV destinos
           </button>
+          <a href={vendorApiUrl(vendor, `/access-report/html?minutes=${minutes}`)} className={btn} download>
+            <FileDown className="w-3.5 h-3.5" /> Baixar HTML
+          </a>
           <button type="button" onClick={() => window.print()} className={btn}>
             <Printer className="w-3.5 h-3.5" /> Imprimir
           </button>

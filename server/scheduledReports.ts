@@ -1,3 +1,4 @@
+import type { ReportBranding } from '../shared/branding.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -49,6 +50,8 @@ export interface ScheduledReports {
 export function createScheduledReports(deps: {
   dataDir: string;
   brand: { label: string; accent: string };
+  /** Identidade do cliente (logo e nome) da localidade, aplicada no cabeçalho do HTML. */
+  getBranding?: (siteId: string) => ReportBranding | undefined;
   listSites: () => Array<{ id: string; name: string }>;
   generate: (siteId: string, minutes: number) => Promise<AccessReportData>;
   log: (level: 'info' | 'warn', message: string, detail?: string) => void;
@@ -110,7 +113,7 @@ export function createScheduledReports(deps: {
       const report = await deps.generate(siteId, minutes);
       if (report.timedOut) throw new Error('O banco excedeu o tempo limite ao calcular o relatório (muitos logs no período).');
       const site = deps.listSites().find((s) => s.id === siteId);
-      const html = renderAccessReportHtml(report, site?.name ?? 'Localidade', deps.brand);
+      const html = renderAccessReportHtml(report, site?.name ?? 'Localidade', deps.brand, deps.getBranding?.(siteId));
       const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
       const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
       const dir = dirFor(siteId);
