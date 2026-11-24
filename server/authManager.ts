@@ -21,7 +21,8 @@ interface AuthStoreFile {
   users: StoredUser[];
 }
 
-const SESSION_COOKIE_NAME = 'sonicaudit_session';
+const SESSION_COOKIE_NAME = 'netanalyzer_session';
+const LEGACY_SESSION_COOKIE_NAME = 'sonicaudit_session';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MIN_PASSWORD_LENGTH = 10;
 const MAX_LOGIN_FAILURES = 5;
@@ -99,13 +100,23 @@ export class AuthManager {
       }
     }
 
-    // Optional Linux headless bootstrap via environment variables
-    const envUser = process.env.SONICAUDIT_ADMIN_USER?.trim();
-    const envPass = process.env.SONICAUDIT_ADMIN_PASS?.trim();
+    // Optional Linux headless bootstrap via environment variables (aceita nomes novos e legados)
+    const envUser = (
+      process.env.NETANALYZER_ADMIN_USER ||
+      process.env.FWAUDIT_ADMIN_USER ||
+      process.env.SONICAUDIT_ADMIN_USER ||
+      ''
+    ).trim();
+    const envPass = (
+      process.env.NETANALYZER_ADMIN_PASS ||
+      process.env.FWAUDIT_ADMIN_PASS ||
+      process.env.SONICAUDIT_ADMIN_PASS ||
+      ''
+    ).trim();
     if (this.data.users.length === 0 && envUser && envPass) {
       if (envPass.length < MIN_PASSWORD_LENGTH) {
         console.warn(
-          `[auth] SONICAUDIT_ADMIN_PASS ignorada: a senha deve ter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`
+          `[auth] NETANALYZER_ADMIN_PASS ignorada: a senha deve ter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`
         );
       } else {
         await this.createInitialUser(envUser, envPass).catch(() => undefined);
@@ -357,18 +368,22 @@ export class AuthManager {
   }
 
   clearSessionCookie(req: Request, res: Response): void {
-    const attrs = [
-      `${SESSION_COOKIE_NAME}=`,
+    const suffix = [
       'Path=/',
       'Max-Age=0',
       'HttpOnly',
       this.isHttps(req) ? 'SameSite=Lax; Secure' : 'SameSite=Lax',
-    ];
-    res.setHeader('Set-Cookie', attrs.join('; '));
+    ].join('; ');
+    res.setHeader('Set-Cookie', [
+      `${SESSION_COOKIE_NAME}=; ${suffix}`,
+      `${LEGACY_SESSION_COOKIE_NAME}=; ${suffix}`,
+    ]);
   }
 
   getAuthenticatedUser(req: Request): string | null {
-    const token = this.parseCookie(req, SESSION_COOKIE_NAME);
+    const token =
+      this.parseCookie(req, SESSION_COOKIE_NAME) ??
+      this.parseCookie(req, LEGACY_SESSION_COOKIE_NAME);
     return this.verifyToken(token);
   }
 

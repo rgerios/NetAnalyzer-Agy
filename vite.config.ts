@@ -21,7 +21,8 @@ export default defineConfig(() => {
           manualChunks(id) {
             if (!id.includes('node_modules')) return;
             if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
-            if (id.includes('jspdf') || id.includes('html2canvas') || id.includes('dompurify')) {
+            if (id.includes('html2canvas')) return 'vendor-html2canvas';
+            if (id.includes('jspdf') || id.includes('dompurify')) {
               return 'vendor-pdf';
             }
             if (id.includes('motion')) return 'vendor-motion';

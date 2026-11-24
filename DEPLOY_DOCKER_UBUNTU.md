@@ -2,19 +2,22 @@
 
 Esta arquitetura separa o **NetAnalyzer** em cinco containers independentes na mesma rede privada Docker (`fwaudit_net`):
 
-1. **`fwaudit-db` (`postgres:16-alpine`)**: Banco de dados PostgreSQL compartilhado com isolamento lógico por coluna `vendor` (`sonicwall` / `fortigate`), login único e configurações de IA compartilhadas (volume `fwaudit_pgdata`).
-2. **`fwaudit-backend-sonicwall` (`FW_VENDOR=sonicwall`)**: API SonicOS, parser `.exp`, IA e receptor UDP Syslog dedicado na porta **`5514/udp`**.
-3. **`fwaudit-backend-fortigate` (`FW_VENDOR=fortigate`)**: API REST FortiOS v2 (Bearer Token + VDOM), CLI FortiOS, IA e receptor UDP Syslog dedicado na porta **`5515/udp`**.
-4. **`fwaudit-backend-aws` (`FW_VENDOR=aws`)**: ambiente AWS, lê VPC Flow Logs, WAF e ALB do S3 (somente leitura, sem porta UDP). As fontes e a chave de acesso são cadastradas na tela **Contas & Fontes S3**.
-5. **`fwaudit-frontend` (`Dockerfile.frontend`)**: Nginx servindo o painel React unificado (**Azul Pastel** para SonicWall e **Vermelho Pastel** para FortiGate) e roteando `/api/auth/*`, `/api/sonicwall/*`, `/api/fortigate/*` e `/api/aws/*`.
+1. **`netanalyzer-db` (`postgres:16-alpine`)**: Banco de dados PostgreSQL compartilhado com isolamento lógico por coluna `vendor` (`sonicwall` / `fortigate` / `aws`), login único e configurações de IA/notificações compartilhadas (volume `fwaudit_pgdata`).
+2. **`netanalyzer-backend-sonicwall` (`FW_VENDOR=sonicwall`)**: API SonicOS, parser `.exp`, IA e receptor UDP Syslog dedicado na porta **`5514/udp`**.
+3. **`netanalyzer-backend-fortigate` (`FW_VENDOR=fortigate`)**: API REST FortiOS v2 (Bearer Token + VDOM), CLI FortiOS, IA e receptor UDP Syslog dedicado na porta **`5515/udp`**.
+4. **`netanalyzer-backend-aws` (`FW_VENDOR=aws`)**: ambiente AWS, lê VPC Flow Logs, WAF e ALB do S3 ou CloudWatch Logs (somente leitura, sem porta UDP) e conta com o Analista de IA especializado em AWS.
+5. **`netanalyzer-frontend` (`Dockerfile.frontend`)**: Nginx servindo o painel React unificado (**Azul Pastel** para SonicWall, **Vermelho Pastel** para FortiGate e **Verde-Água** para AWS) e roteando `/api/auth/*`, `/api/sonicwall/*`, `/api/fortigate/*` e `/api/aws/*`.
 
 ---
 
 ## Caminho rápido: script de deploy
 
-Dentro da pasta do projeto, no servidor Ubuntu:
+Clone o repositório e rode o instalador no servidor Ubuntu:
 
 ```bash
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/rgerios/NetAnalyzer-Agy.git ~/NetAnalyzer-Agy
+cd ~/NetAnalyzer-Agy
 ./deploy.sh
 ```
 
@@ -30,7 +33,7 @@ Instale o Docker Engine e o plugin `docker compose`:
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl gnupg
+sudo apt install -y ca-certificates curl gnupg git
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
@@ -51,13 +54,16 @@ sudo usermod -aG docker $USER
 
 ## 2. Configuração e Subida
 
-No diretório do projeto no servidor Ubuntu:
+Clone o projeto e configure o `.env` no servidor Ubuntu:
 
 ```bash
-nano .env   # Crie o arquivo com POSTGRES_PASSWORD (senha forte, só letras e números), FWAUDIT_ADMIN_USER e FWAUDIT_ADMIN_PASS
+git clone https://github.com/rgerios/NetAnalyzer-Agy.git ~/NetAnalyzer-Agy
+cd ~/NetAnalyzer-Agy
+cp .env.example .env
+nano .env   # Defina POSTGRES_PASSWORD (só letras e números), NETANALYZER_ADMIN_USER e NETANALYZER_ADMIN_PASS
 ```
 
-Suba os 4 containers em segundo plano:
+Suba os 5 containers em segundo plano:
 
 ```bash
 docker compose up -d --build
@@ -67,7 +73,7 @@ Verifique o status e a saúde dos containers:
 
 ```bash
 docker compose ps
-docker compose logs -f backend-sonicwall backend-fortigate
+docker compose logs -f backend-sonicwall backend-fortigate backend-aws
 ```
 
 Acesse no navegador:
@@ -76,7 +82,7 @@ Acesse no navegador:
 https://IP_DO_SERVIDOR_UBUNTU
 ```
 
-Na primeira abertura, crie seu usuário e senha únicos pela tela inicial (ou defina `FWAUDIT_ADMIN_USER` / `FWAUDIT_ADMIN_PASS` no `.env`).
+Na primeira abertura, crie seu usuário e senha únicos pela tela inicial (ou defina `NETANALYZER_ADMIN_USER` / `NETANALYZER_ADMIN_PASS` no `.env`).
 
 ---
 
@@ -103,7 +109,7 @@ sudo ufw reload
   ```bash
   docker compose up -d --build --no-deps frontend
   ```
-- **Reconstruir apenas o backend FortiGate (sem parar SonicWall ou PostgreSQL)**:
+- **Reconstruir apenas o backend FortiGate (sem parar SonicWall, AWS ou PostgreSQL)**:
   ```bash
   docker compose up -d --build --no-deps backend-fortigate
   ```
@@ -111,13 +117,17 @@ sudo ufw reload
   ```bash
   docker compose up -d --build --no-deps backend-sonicwall
   ```
+- **Reconstruir apenas o backend AWS**:
+  ```bash
+  docker compose up -d --build --no-deps backend-aws
+  ```
 - **Backup completo do banco PostgreSQL**:
   ```bash
-  docker exec -t fwaudit-db pg_dump -U fwaudit fwaudit > backup-fwaudit-$(date +%F).sql
+  docker exec -t netanalyzer-db pg_dump -U fwaudit fwaudit > backup-netanalyzer-$(date +%F).sql
   ```
 - **Restaurar backup**:
   ```bash
-  cat backup-fwaudit-AAAA-MM-DD.sql | docker exec -i fwaudit-db psql -U fwaudit -d fwaudit
+  cat backup-netanalyzer-AAAA-MM-DD.sql | docker exec -i netanalyzer-db psql -U fwaudit -d fwaudit
   ```
 
 ---
@@ -174,8 +184,8 @@ Se puder, mova o volume do banco (`fwaudit_pgdata`) para um SSD: é o ganho mais
 O painel é servido **somente em HTTPS, na porta padrão 443**. **Não existe porta HTTP publicada**: nada escuta
 na 80 (a única porta 80 é interna, no loopback do container, só para o health check do Docker).
 
-- **O certificado é gerado sozinho** no primeiro start do container `fwaudit-frontend` e guardado no volume `fwaudit_certs`.
-  Ele é assinado por uma **CA local** ("FW Audit Local CA", 10 anos); o certificado do servidor vale 825 dias e é
+- **O certificado é gerado sozinho** no primeiro start do container `netanalyzer-frontend` e guardado no volume `fwaudit_certs`.
+  Ele é assinado por uma **CA local** ("NetAnalyzer Local CA", 10 anos); o certificado do servidor vale 825 dias e é
   renovado automaticamente 30 dias antes de vencer.
 - **O certificado cobre** `localhost`, o hostname do servidor e os IPs em `TLS_HOSTNAMES` e `TLS_IPS` (no `.env`,
   separados por vírgula; o `deploy.sh` preenche com o IP do servidor). Se o IP ou o nome mudar, edite o `.env` e rode
@@ -189,8 +199,8 @@ na 80 (a única porta 80 é interna, no loopback do container, só para o health
 Sem isso, o navegador mostra "conexão não é particular" (o acesso funciona, é só o aviso). Importe a **CA**, não o
 certificado do servidor: assim as renovações continuam confiáveis.
 
-1. Baixe a CA em `https://IP_DO_SERVIDOR/fwaudit-ca.crt` (aceite o aviso apenas para baixar; ou use
-   `curl -k https://IP_DO_SERVIDOR/fwaudit-ca.crt -o fwaudit-ca.crt`).
+1. Baixe a CA em `https://IP_DO_SERVIDOR/netanalyzer-ca.crt` (aceite o aviso apenas para baixar; ou use
+   `curl -k https://IP_DO_SERVIDOR/netanalyzer-ca.crt -o netanalyzer-ca.crt`).
 2. **Confira a impressão digital** (SHA-256) com a mostrada ao final do `deploy.sh` ou com:
    ```bash
    docker compose exec -T frontend openssl x509 -in /etc/nginx/certs/ca.crt -noout -fingerprint -sha256
@@ -210,16 +220,15 @@ Coloque `server.crt` (com a cadeia, se houver) e `server.key` no volume e reinic
 arquivos que ele não criou:
 
 ```bash
-docker cp meu.crt fwaudit-frontend:/etc/nginx/certs/server.crt
-docker cp minha.key fwaudit-frontend:/etc/nginx/certs/server.key
+docker cp meu.crt netanalyzer-frontend:/etc/nginx/certs/server.crt
+docker cp minha.key netanalyzer-frontend:/etc/nginx/certs/server.key
 docker compose restart frontend
 ```
 
-Para voltar ao certificado automático, apague `server.crt`, `server.key` e `.fwaudit-generated` desse volume e reinicie.
+Para voltar ao certificado automático, apague `server.crt`, `server.key`, `.netanalyzer-generated` e `.fwaudit-generated` desse volume e reinicie.
 
 ### Observações
 
 - Não ativei o **HSTS** de propósito: com certificado local ele impediria o navegador de permitir a exceção.
 - Se o painel ficar atrás de outro proxy/balanceador com TLS, ele deve enviar `X-Forwarded-Proto: https` para o cookie sair como `Secure`.
 - Monitoramento: `curl -k https://IP_DO_SERVIDOR/api/health` (responde sem login).
-- Instalações antigas que usavam `http://IP:8080`: essa porta deixa de existir; atualize os favoritos para `https://IP`.

@@ -1,7 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
-    container_name: ${CONTAINER_PREFIX:-fwaudit}-db
+    container_name: ${CONTAINER_PREFIX:-netanalyzer}-db
     restart: unless-stopped
     # Ajuste para disco mecânico (HDD) e tabela de logs grande. Valores sobrescrevíveis no .env.
     # synchronous_commit=off: o COMMIT não espera o fsync; em queda de energia perde-se no máximo
@@ -53,7 +53,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: ${CONTAINER_PREFIX:-fwaudit}-backend-sonicwall
+    container_name: ${CONTAINER_PREFIX:-netanalyzer}-backend-sonicwall
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
@@ -69,8 +69,8 @@ services:
       SERVE_STATIC: "false"
       DATABASE_URL: postgres://${POSTGRES_USER:-fwaudit}:${POSTGRES_PASSWORD:-fwaudit_change_me}@db:5432/${POSTGRES_DB:-fwaudit}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      SONICAUDIT_ADMIN_USER: ${FWAUDIT_ADMIN_USER:-}
-      SONICAUDIT_ADMIN_PASS: ${FWAUDIT_ADMIN_PASS:-}
+      NETANALYZER_ADMIN_USER: ${NETANALYZER_ADMIN_USER:-${FWAUDIT_ADMIN_USER:-}}
+      NETANALYZER_ADMIN_PASS: ${NETANALYZER_ADMIN_PASS:-${FWAUDIT_ADMIN_PASS:-}}
     ports:
       - "${SONICWALL_UDP_PORT:-5514}:5514/udp"
     volumes:
@@ -82,7 +82,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: ${CONTAINER_PREFIX:-fwaudit}-backend-fortigate
+    container_name: ${CONTAINER_PREFIX:-netanalyzer}-backend-fortigate
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
@@ -98,8 +98,8 @@ services:
       SERVE_STATIC: "false"
       DATABASE_URL: postgres://${POSTGRES_USER:-fwaudit}:${POSTGRES_PASSWORD:-fwaudit_change_me}@db:5432/${POSTGRES_DB:-fwaudit}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      SONICAUDIT_ADMIN_USER: ${FWAUDIT_ADMIN_USER:-}
-      SONICAUDIT_ADMIN_PASS: ${FWAUDIT_ADMIN_PASS:-}
+      NETANALYZER_ADMIN_USER: ${NETANALYZER_ADMIN_USER:-${FWAUDIT_ADMIN_USER:-}}
+      NETANALYZER_ADMIN_PASS: ${NETANALYZER_ADMIN_PASS:-${FWAUDIT_ADMIN_PASS:-}}
     ports:
       - "${FORTIGATE_UDP_PORT:-5515}:5515/udp"
     volumes:
@@ -111,7 +111,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: ${CONTAINER_PREFIX:-fwaudit}-backend-aws
+    container_name: ${CONTAINER_PREFIX:-netanalyzer}-backend-aws
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
@@ -127,8 +127,8 @@ services:
       SERVE_STATIC: "false"
       DATABASE_URL: postgres://${POSTGRES_USER:-fwaudit}:${POSTGRES_PASSWORD:-fwaudit_change_me}@db:5432/${POSTGRES_DB:-fwaudit}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      SONICAUDIT_ADMIN_USER: ${FWAUDIT_ADMIN_USER:-}
-      SONICAUDIT_ADMIN_PASS: ${FWAUDIT_ADMIN_PASS:-}
+      NETANALYZER_ADMIN_USER: ${NETANALYZER_ADMIN_USER:-${FWAUDIT_ADMIN_USER:-}}
+      NETANALYZER_ADMIN_PASS: ${NETANALYZER_ADMIN_PASS:-${FWAUDIT_ADMIN_PASS:-}}
     volumes:
       - fwaudit_aws_data:/app/data
     networks:
@@ -138,7 +138,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    container_name: ${CONTAINER_PREFIX:-fwaudit}-frontend
+    container_name: ${CONTAINER_PREFIX:-netanalyzer}-frontend
     restart: unless-stopped
     depends_on:
       backend-sonicwall:

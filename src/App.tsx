@@ -4,7 +4,6 @@ import { CommandPalette } from './components/CommandPalette.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { LoginView } from './components/LoginView.tsx';
 import { NotificationToastStack } from './components/NotificationToastStack.tsx';
-import { PcapView } from './components/PcapView.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import type { ActiveSection, AuditOverview, AuthStatus, FirewallVendor } from './types.ts';
@@ -36,6 +35,9 @@ const AwsOverviewView = lazy(() =>
 );
 const OverviewView = lazy(() =>
   import('./components/OverviewView.tsx').then((m) => ({ default: m.OverviewView }))
+);
+const PcapView = lazy(() =>
+  import('./components/PcapView.tsx').then((m) => ({ default: m.PcapView }))
 );
 const ReportsView = lazy(() =>
   import('./components/ReportsView.tsx').then((m) => ({ default: m.ReportsView }))
@@ -256,7 +258,7 @@ function AppShell() {
     if (nextVendor !== 'aws' && (activeSection === 'alb' || activeSection === 'vpcflow' || activeSection === 'waf')) {
       setActiveSection('overview');
     }
-    // O ambiente AWS não tem regras/NATs/IA: volta para a visão geral se estava numa dessas telas
+    // O ambiente AWS usa telas próprias por recurso (ALB/VPC/WAF) e não tem regras/NATs de borda
     if (nextVendor === 'aws' && (activeSection === 'rules' || activeSection === 'nats' || activeSection === 'syslogs')) {
       setActiveSection('overview');
     }

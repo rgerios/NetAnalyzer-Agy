@@ -1,38 +1,14 @@
-import {
-  buildDestinationsReport,
-  buildSourcesReport,
-  filterRowsByDestination,
-  filterRowsByPort,
-  filterRowsBySource,
-  hasDestinationFilter,
-  normalizeDestinationFilter,
-  normalizeSourceFilter,
-  rowFromDb,
-  rowsFromEvents,
-  type DestinationFilter,
-  type RadarRow,
-} from './destinationsEngine.ts';
-import { buildBehaviorReport, detectOrigin, groupsFromEvents, remoteOfPair, type BehaviorGroup } from './behaviorEngine.ts';
-import { hasPortFilter, parsePortFilter, portMatches, wellKnownService, type PortFilterSpec, type PortStat } from '../shared/ports.ts';
-import { buildPortStats, buildPortStatsFromGroups, filterEventsByPort, filterGroupsByPort, isPublicDestination } from './portsEngine.ts';
+import { hasPortFilter, parsePortFilter, portMatches } from '../shared/ports.ts';
 import { createIntel } from './intel.ts';
-import { aggregateEventsInMemory, buildAccessReport } from './accessReport.ts';
-import { createScheduledReports } from './scheduledReports.ts';
-import { renderAccessReportHtml } from './accessReportHtml.ts';
 import { httpFilterMatches, parseHttpFilter } from './httpFilter.ts';
-import { renderAwsReportHtml, type AwsReportData, type AwsReportSection } from './awsReportHtml.ts';
 import { EMPTY_BRANDING } from '../shared/branding.ts';
-import { applyBranding, BrandingError, sanitizeStoredBranding } from './reportBranding.ts';
-import { getSharedResolver } from './rdns.ts';
+import { sanitizeStoredBranding } from './reportBranding.ts';
+import { assertSafeOutboundUrl, UnsafeOutboundUrlError } from './securityGuards.ts';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import express, { type Router } from 'express';
-import {
-  DEFAULT_AI_SETTINGS,
-  runAiLogAnalysis,
-  toPublicAiConfig,
-} from './aiClient.ts';
+import { DEFAULT_AI_SETTINGS } from './aiClient.ts';
 import {
   DEFAULT_ALERT_SETTINGS,
   evaluateOverviewAlerts,
@@ -77,48 +53,23 @@ import {
   parseSonicWallExp,
   parseSonicWallSyslog,
 } from './parsers.ts';
-import {
-  buildAuditReport,
-  renderReportHtml,
-  renderReportMarkdown,
-} from './reportBuilder.ts';
-import { buildHttpInsights, rowsFromAlbEvents } from './httpInsights.ts';
-import type { HttpInsights } from '../shared/httpInsights.ts';
-import {
-  bucketSecondsFor,
-  FACETS,
-  facetsFromEvents,
-  KIND_CATEGORY,
-  KIND_SQL_FILTER,
-  summarizeCategories,
-  timelineFromEvents,
-  type AwsLogKind,
-  type FacetReport,
-} from './facets.ts';
+import { KIND_CATEGORY } from './facets.ts';
 import { createUnrecognizedTracker, type UnrecognizedSource } from './unrecognized.ts';
 import { registerPcapRoutes } from './pcap/routes.ts';
-import { AWS_REGION_COUNTRY, type AwsConfigSaveBody } from '../shared/aws.ts';
-import {
-  applyAwsSave,
-  AwsConfigError,
-  defaultAwsConfig,
-  detectAwsType,
-  normalizeAwsConfig,
-  normalizeSource as normalizeAwsSource,
-  toPublicAwsConfig,
-} from './awsConfig.ts';
-import { clientConfigFor, createAwsIngestor } from './awsIngest.ts';
+import { defaultAwsConfig, detectAwsType, normalizeAwsConfig } from './awsConfig.ts';
+import { createAwsIngestor } from './awsIngest.ts';
 import { parseAwsObject } from './awsParsers.ts';
 import { createAwsSampleDataset } from './awsSampleData.ts';
-import { buildLogsClient, listLogGroups, listStreamPrefixes, testCloudWatchSource } from './awsCloudWatch.ts';
-import { buildS3Client, describeAwsError, testSource } from './awsS3.ts';
 import { createSampleDataset } from './sampleData.ts';
 import { fetchSonicOsAudit } from './sonicosClient.ts';
 import { SyslogUdpReceiver } from './syslogUdp.ts';
+import { registerAiAndLogsRoutes } from './routes/aiAndLogsRoutes.ts';
+import { registerAwsCloudRoutes } from './routes/awsCloudRoutes.ts';
+import { registerRadarAndBehaviorRoutes } from './routes/radarAndBehaviorRoutes.ts';
+import { registerReportsRoutes } from './routes/reportsRoutes.ts';
+import { createAggregateCache } from './routes/routeHelpers.ts';
 import type {
-  AiChatMessage,
   AiProviderSettings,
-  AiProviderType,
   AlertRecord,
   ApplianceMetadata,
   AuditOverview,
@@ -133,7 +84,6 @@ import type {
   NatPolicy,
   NotificationSettings,
   OverviewAlert,
-  SyncStatus,
   SyslogEvent,
   TelemetrySnapshot,
   UdpListenerConfig,
@@ -143,7 +93,6 @@ import type {
 
 const DEFAULT_RETENTION_DAYS = 10;
 const DEFAULT_AUTO_SYNC_MINUTES = 5;
-const ENC_PREFIX = 'enc:';
 
 /** Limite de eventos aguardando gravação no banco antes de começar a descartar. */
 const MAX_PENDING_INSERTS = 200_000;
@@ -1511,33 +1460,13 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
   }
 
   // ---------------------------------------------------------------------------
-  // IA: a chave fica cifrada em repouso
-  // ---------------------------------------------------------------------------
-
-  function decryptAiKey(stored: string): string {
-    if (!stored) return '';
-    return stored.startsWith(ENC_PREFIX) ? authManager.decryptSecret(stored.slice(ENC_PREFIX.length)) : stored;
-  }
-
-  function getAiSettingsPlain(): AiProviderSettings {
-    const current = store.aiSettings || DEFAULT_AI_SETTINGS;
-    return { ...current, apiKey: decryptAiKey(current.apiKey) };
-  }
-
-  async function reloadSharedAiSettings(): Promise<void> {
-    if (!usePg) return;
-    const shared = await pgStore.loadSharedAiSettings();
-    if (shared) store.aiSettings = { ...DEFAULT_AI_SETTINGS, ...shared };
-  }
-
-  // ---------------------------------------------------------------------------
   // Rotas
   // ---------------------------------------------------------------------------
 
   const router = express.Router();
 
   // Análise de PCAP (independe do fabricante)
-  registerPcapRoutes(router, { vendor, logError: (m, d) => appLog.error(vendor, 'pcap', m, d) });
+  const pcapRoutes = registerPcapRoutes(router, { vendor, logError: (m, d) => appLog.error(vendor, 'pcap', m, d) });
 
   const asyncRoute =
     (handler: (req: express.Request, res: express.Response) => Promise<void>) =>
@@ -1867,18 +1796,18 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
       if (body.clearWebhook) {
         next.webhookUrlEncrypted = '';
       } else if (typeof body.webhookUrl === 'string' && body.webhookUrl.trim()) {
-        let parsedUrl: URL;
         try {
-          parsedUrl = new URL(body.webhookUrl.trim());
-        } catch {
-          res.status(400).json({ error: 'URL de webhook inválida.' });
+          const parsedUrl = await assertSafeOutboundUrl(body.webhookUrl.trim(), {
+            allowLoopback: process.env.ALLOW_LOCAL_WEBHOOKS === 'true',
+            resolveDns: false,
+            label: 'webhook',
+          });
+          next.webhookUrlEncrypted = authManager.encryptSecret(parsedUrl.toString());
+        } catch (err) {
+          const msg = err instanceof UnsafeOutboundUrlError ? err.message : 'URL de webhook inválida.';
+          res.status(400).json({ error: msg });
           return;
         }
-        if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
-          res.status(400).json({ error: 'O webhook deve usar http:// ou https://.' });
-          return;
-        }
-        next.webhookUrlEncrypted = authManager.encryptSecret(parsedUrl.toString());
       }
 
       if (body.clearTelegram) {
@@ -1975,516 +1904,42 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
     })
   );
 
-  // --- Relatórios ------------------------------------------------------------
-
-  router.get('/report', (req, res) => {
-    const site = siteFor(req);
-    const overview = buildOverview(site);
-    res.json(buildAuditReport(overview, site.syslogs, site.rules, site.nats));
-  });
-
-  // Relatório de Acessos e Consumo (IPs, categorias, países e banda), agregado no banco
-  async function computeAccessReport(site: FirewallSiteRecord, minutes: number, timeoutMs?: number) {
-    const sinceIso = new Date(Date.now() - minutes * 60 * 1000).toISOString();
-    let agg;
-    let dataSource: 'memory' | 'database' = 'memory';
-    if (usePg) {
-      await flushPendingInserts();
-      agg = await pgStore.aggregateAccess(site.id, sinceIso, undefined, timeoutMs);
-      dataSource = 'database';
-    } else {
-      agg = aggregateEventsInMemory(site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso));
-    }
-    const resolver = getSharedResolver();
-    const report = buildAccessReport({
-      agg,
-      vendor,
-      inbound: isAws,
-      minutes,
-      sinceIso,
-      dataSource,
-      intel,
-      lookupHost: (ip) => resolver.lookupCached(ip),
-    });
-    resolver.schedule(report.destinations.filter((d) => d.host === null && d.country !== null).slice(0, 40).map((d) => d.ip));
-    return report;
-  }
-
-  router.get(
-    '/access-report',
-    asyncRoute(async (req, res) => {
-      const raw = Number(req.query.minutes ?? 1440);
-      const minutes = Number.isFinite(raw) && raw > 0 ? Math.min(43200, Math.floor(raw)) : 1440;
-      res.json(await computeAccessReport(siteFor(req), minutes));
-    })
-  );
-
-  // Identidade do cliente nos relatórios de entrega (nome, logo, quem preparou)
-  router.get('/branding', (req, res) => {
-    res.json(siteFor(req).branding ?? { ...EMPTY_BRANDING });
-  });
-
-  router.put(
-    '/branding',
-    asyncRoute(async (req, res) => {
-      const site = siteFor(req);
-      try {
-        site.branding = applyBranding(site.branding, (req.body ?? {}) as Record<string, unknown>);
-      } catch (err) {
-        if (err instanceof BrandingError) {
-          res.status(400).json({ error: err.message });
-          return;
-        }
-        throw err;
-      }
-      site.updatedAt = new Date().toISOString();
-      schedulePersist();
-      res.json(site.branding);
-    })
-  );
-
-  // Relatório de acessos e consumo em HTML (download direto), com a identidade do cliente
-  router.get(
-    '/access-report/html',
-    asyncRoute(async (req, res) => {
-      const raw = Number(req.query.minutes ?? 1440);
-      const minutes = Number.isFinite(raw) && raw > 0 ? Math.min(43200, Math.floor(raw)) : 1440;
-      const site = siteFor(req);
-      const report = await computeAccessReport(site, minutes);
-      const brand = isAws
-        ? { label: 'AWS', accent: '#0f766e' }
-        : vendor === 'fortigate'
-          ? { label: 'FortiGate', accent: '#da291c' }
-          : { label: 'SonicWall', accent: '#e8590c' };
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="netanalyzer-acessos-${new Date().toISOString().slice(0, 10)}.html"`);
-      res.send(renderAccessReportHtml(report, site.name, brand, site.branding));
-    })
-  );
-
-  // Agendamento: gera o relatório em HTML estático no horário escolhido e deixa pronto para baixar
-  const scheduled = createScheduledReports({
-    dataDir,
-    brand: isAws
-      ? { label: 'AWS', accent: '#0f766e' }
-      : vendor === 'fortigate'
-        ? { label: 'FortiGate', accent: '#da291c' }
-        : { label: 'SonicWall', accent: '#e8590c' },
-    getBranding: (siteId) => store.sites[siteId]?.branding,
-    listSites: () => Object.values(store.sites).map((s) => ({ id: s.id, name: s.name })),
-    generate: (siteId, minutes) => {
-      const site = store.sites[siteId];
-      if (!site) throw new Error('Localidade não encontrada.');
-      // segundo plano: sem limite de tempo por padrão (REPORT_SCHEDULED_TIMEOUT_MS > 0 impõe um teto, em ms)
-      return computeAccessReport(site, minutes, Number(process.env.REPORT_SCHEDULED_TIMEOUT_MS) || 0);
-    },
-    log: (level, message, detail) => appLog[level](vendor, 'scheduled-report', message, detail),
-  });
-  scheduled.start();
-
-  router.get(
-    '/reports/schedule',
-    asyncRoute(async (req, res) => {
-      res.json(await scheduled.state(siteFor(req).id));
-    })
-  );
-
-  router.put(
-    '/reports/schedule',
-    asyncRoute(async (req, res) => {
-      const b = (req.body ?? {}) as Record<string, unknown>;
-      if (b.everyHours !== undefined && ![24, 72, 168].includes(Number(b.everyHours))) {
-        res.status(400).json({ error: 'Frequência inválida: use 24 horas, 3 dias ou 7 dias.' });
-        return;
-      }
-      if (b.timeOfDay !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(b.timeOfDay))) {
-        res.status(400).json({ error: 'Horário inválido: use HH:MM.' });
-        return;
-      }
-      res.json(
-        await scheduled.save(siteFor(req).id, {
-          enabled: b.enabled === undefined ? undefined : Boolean(b.enabled),
-          everyHours: b.everyHours === undefined ? undefined : Number(b.everyHours),
-          timeOfDay: b.timeOfDay === undefined ? undefined : String(b.timeOfDay),
-          keep: b.keep === undefined ? undefined : Number(b.keep),
-        })
-      );
-    })
-  );
-
-  router.post(
-    '/reports/schedule/run',
-    asyncRoute(async (req, res) => {
-      const siteId = siteFor(req).id;
-      if (scheduled.isRunning()) {
-        res.status(409).json({ error: 'Já existe um relatório sendo gerado.' });
-        return;
-      }
-      // Pode levar de segundos a minutos (muitos logs): responde já e a tela acompanha a lista
-      const rawMin = Number((req.body as { minutes?: unknown } | undefined)?.minutes);
-      const minutes = [60, 360, 1440, 4320, 10080, 43200].includes(rawMin) ? rawMin : undefined;
-      void scheduled.runNow(siteId, 'manual', minutes).catch((err) => appLog.warn(vendor, 'scheduled-report', 'Falha ao gerar o relatório', err instanceof Error ? err.message : String(err)));
-      res.status(202).json({ ok: true });
-    })
-  );
-
-  router.get(
-    '/reports/files/:id',
-    asyncRoute(async (req, res) => {
-      const found = await scheduled.filePath(siteFor(req).id, String(req.params.id));
-      if (!found) {
-        res.status(404).json({ error: 'Relatório não encontrado.' });
-        return;
-      }
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Content-Disposition', `${req.query.view === '1' ? 'inline' : 'attachment'}; filename="${found.filename}"`);
-      res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:");
-      res.sendFile(found.file);
-    })
-  );
-
-  router.delete(
-    '/reports/files/:id',
-    asyncRoute(async (req, res) => {
-      const ok = await scheduled.remove(siteFor(req).id, String(req.params.id));
-      res.status(ok ? 200 : 404).json(ok ? { ok: true } : { error: 'Relatório não encontrado.' });
-    })
-  );
-
-  router.get('/report/download', (req, res) => {
-    const site = siteFor(req);
-    const format = String(req.query.format || 'html').toLowerCase();
-    const overview = buildOverview(site);
-    const report = buildAuditReport(overview, site.syslogs, site.rules, site.nats);
-    const stamp = new Date().toISOString().slice(0, 10);
-    const slug = isAws ? 'aws' : vendor === 'fortigate' ? 'fortigate' : 'sonicwall';
-
-    if (format === 'md' || format === 'markdown') {
-      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="fwaudit-${slug}-${stamp}.md"`);
-      res.send(renderReportMarkdown(report));
-      return;
-    }
-
-    if (format === 'json') {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="fwaudit-${slug}-${stamp}.json"`);
-      res.send(JSON.stringify(report, null, 2));
-      return;
-    }
-
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="fwaudit-${slug}-${stamp}.html"`);
-    res.send(renderReportHtml(report, site.branding));
-  });
-
-  // --- Syslogs ---------------------------------------------------------------
-
-  /** Eventos máximos lidos do banco quando o radar é filtrado por IP de origem. */
-  const DESTINATIONS_SOURCE_QUERY_LIMIT = 20_000;
-
-  // --- Radar de destinos e origens ----------------------------------------------
-  // Agrega o tráfego por destino (FQDN do log ou DNS reverso, senão IP) e por IP de origem.
-  // Sem filtros usa a janela recente em memória; com filtro de origem/destino e PostgreSQL consulta
-  // o banco (limitado, com tempo máximo), para achar também o que já saiu da janela.
-
-  /** Eventos máximos lidos do banco quando o radar é filtrado por origem ou destino. */
-  const RADAR_DB_QUERY_LIMIT = 20_000;
-
-  type RadarFilters = { srcIp: string; dst: DestinationFilter; ports: PortFilterSpec };
-
-  function parseRadarFilters(req: express.Request, res: express.Response): RadarFilters | null {
-    const srcIp = normalizeSourceFilter(req.query.srcIp);
-    if (srcIp === null) {
-      res.status(400).json({ error: 'IP de origem inválido. Use só números, pontos e dois-pontos (ex.: 10.20.4.45).' });
-      return null;
-    }
-    const dst = normalizeDestinationFilter(req.query.dst, req.query.dstIps);
-    if (dst === null) {
-      res.status(400).json({ error: 'Filtro de destino inválido. Use um nome, domínio ou IP (até 10 IPs).' });
-      return null;
-    }
-    const ports = parsePortFilter(req.query.dstPort);
-    if (ports === null) {
-      res.status(400).json({ error: 'Filtro de porta inválido. Use números de 0 a 65535, listas (80,443) ou intervalos (8000-8100).' });
-      return null;
-    }
-    return { srcIp, dst, ports };
-  }
-
-  async function loadRadarRows(
-    site: FirewallSiteRecord,
-    minutes: number,
-    filters: RadarFilters,
-    lookupHost: (ip: string) => string | null | undefined
-  ): Promise<{ rows: RadarRow[]; dataSource: 'memory' | 'database'; truncated: boolean; portStats: PortStat[] }> {
-    const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-    const memoryEvents = sinceIso
-      ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-      : site.syslogs;
-    let rows: RadarRow[];
-    let dataSource: 'memory' | 'database' = 'memory';
-    let truncated = false;
-
-    // Período maior que a janela em memória: o banco agrega TODAS as conexões (sem teto de eventos)
-    const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
-    const needDb =
-      usePg &&
-      (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
-    if (needDb) {
-      const agg = await getRadarAggregate(site.id, minutes, sinceIso, filters.srcIp);
-      if (agg.timedOut) {
-        // Consulta lenta demais: usa a janela em memória (parcial) em vez de falhar
-        rows = rowsFromEvents(memoryEvents);
-        truncated = true;
-      } else {
-        rows = agg.rows.map(rowFromDb);
-        truncated = agg.capped;
-        dataSource = 'database';
-      }
-    } else {
-      rows = rowsFromEvents(memoryEvents);
-    }
-
-    rows = filterRowsBySource(rows, filters.srcIp);
-    rows = filterRowsByDestination(rows, filters.dst, lookupHost);
-    // O ranking de portas ignora o filtro de porta, para continuar mostrando as alternativas
-    const portStats = buildPortStatsFromGroups(
-      rows.map((r) => ({
-        src: r.src,
-        dst: r.dst,
-        proto: (r.proto || '').toLowerCase().split('/')[0],
-        port: r.port === null ? '' : String(r.port),
-        blocked: r.blocked,
-        c: r.c,
-        bytes: r.bytes,
-        last: r.last,
-      })),
-      25
-    ).ports;
-    rows = filterRowsByPort(rows, filters.ports);
-    return { rows, dataSource, truncated, portStats };
-  }
-
-  const radarMinutes = (req: express.Request): number => {
-    const raw = Number(req.query.minutes ?? 0);
-    return Number.isFinite(raw) && raw > 0 ? Math.min(43200, Math.floor(raw)) : 0;
-  };
-
-  router.get(
-    '/destinations',
-    asyncRoute(async (req, res) => {
-      const site = siteFor(req);
-      const minutes = radarMinutes(req);
-      const filters = parseRadarFilters(req, res);
-      if (!filters) return;
-      const resolver = getSharedResolver();
-      const lookupHost = (ip: string) => resolver.lookupCached(ip);
-      const { rows, dataSource, truncated, portStats } = await loadRadarRows(site, minutes, filters, lookupHost);
-      const report = buildDestinationsReport({
-        rows,
-        minutes,
-        windowSize: site.syslogs.length,
-        lookupHost,
-        resolver: { enabled: resolver.enabled, ...resolver.stats() },
-      });
-      report.srcIp = filters.srcIp;
-      report.dst = filters.dst.text;
-      report.dstIps = filters.dst.ips;
-      report.dstPort = filters.ports.text;
-      report.ports = portStats;
-      report.dataSource = dataSource;
-      report.truncated = truncated;
-      // Resolve em segundo plano os IPs públicos mais ativos que ainda não têm nome
-      resolver.schedule(
-        report.nodes.filter((n) => n.host === null && n.scope === 'public').slice(0, 40).map((n) => n.ip)
-      );
-      res.json(report);
-    })
-  );
-
-  // --- Behavior: GeoIP / ASN / reputação 100% offline (SonicWall e FortiGate) ---------------
+  // --- Inteligência offline, Relatórios, Radares e Behavior ------------------
 
   const intel = createIntel(dataDir);
   void intel.start().catch(() => undefined);
+  const cachedAggregate = createAggregateCache(flushPendingInserts);
 
-  // As agregações no banco (Behavior e radares) podem levar segundos em períodos longos e as telas
-  // atualizam sozinhas: guarda o resultado e devolve o anterior enquanto renova em segundo plano.
-  const aggCache = new Map<string, { at: number; data: unknown }>();
-  const aggPending = new Map<string, Promise<{ at: number; data: unknown }>>();
-
-  async function cachedAggregate<T extends { timedOut: boolean }>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
-    const refresh = (): Promise<{ at: number; data: unknown }> => {
-      const running = aggPending.get(key);
-      if (running) return running;
-      const p = (async () => {
-        await flushPendingInserts();
-        const data = await load();
-        const entry = { at: Date.now(), data: data as unknown };
-        if (!data.timedOut) {
-          aggCache.set(key, entry);
-          // poucos resultados em cache: descarta o mais antigo
-          while (aggCache.size > 12) {
-            const oldest = [...aggCache.entries()].sort((x, y) => x[1].at - y[1].at)[0];
-            if (!oldest) break;
-            aggCache.delete(oldest[0]);
-          }
-        }
-        return entry;
-      })().finally(() => aggPending.delete(key));
-      aggPending.set(key, p);
-      return p;
-    };
-    const cached = aggCache.get(key);
-    if (cached) {
-      if (Date.now() - cached.at > ttlMs) void refresh().catch(() => undefined);
-      return cached.data as T;
-    }
-    return (await refresh()).data as T;
-  }
-
-  const aggTtl = (minutes: number) => (minutes > 0 && minutes <= 360 ? 15_000 : 45_000);
-
-  function getBehaviorAggregate(siteId: string, minutes: number, sinceIso: string | undefined) {
-    return cachedAggregate(`behavior|${siteId}|${minutes}`, aggTtl(minutes), () =>
-      pgStore.aggregateBehavior(siteId, sinceIso ?? new Date(0).toISOString())
-    );
-  }
-
-  function getRadarAggregate(siteId: string, minutes: number, sinceIso: string | undefined, srcLike: string) {
-    return cachedAggregate(`radar|${siteId}|${minutes}|${srcLike}`, aggTtl(minutes), () =>
-      pgStore.aggregateRadar(siteId, sinceIso ?? new Date(0).toISOString(), { srcLike: srcLike || undefined })
-    );
-  }
-
-  router.get(
-    '/behavior',
-    asyncRoute(async (req, res) => {
-      const site = siteFor(req);
-      const minutes = radarMinutes(req);
-      const portSpec = parsePortFilter(req.query.dstPort);
-      if (portSpec === null) {
-        res.status(400).json({ error: 'Filtro de porta inválido. Use números de 0 a 65535, listas (80,443) ou intervalos (8000-8100).' });
-        return;
-      }
-      const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-      const memoryEvents = sinceIso
-        ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-        : site.syslogs;
-      let groups: BehaviorGroup[];
-      let dataSource: 'memory' | 'database' = 'memory';
-      let truncated = false;
-
-      const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
-      const needDb =
-        usePg &&
-        (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
-      if (needDb) {
-        // Período maior que a janela em memória: o banco agrega TUDO (sem teto de eventos)
-        const agg = await getBehaviorAggregate(site.id, minutes, sinceIso);
-        if (agg.timedOut) {
-          // Consulta lenta demais: cai para a leitura limitada dos eventos mais recentes
-          const rows = await pgStore.querySyslogsSince(site.id, sinceIso ?? new Date(0).toISOString(), [], RADAR_DB_QUERY_LIMIT, {});
-          groups = groupsFromEvents(rows);
-          truncated = rows.length >= RADAR_DB_QUERY_LIMIT;
-        } else {
-          groups = agg.groups;
-          truncated = agg.capped;
-        }
-        dataSource = 'database';
-      } else {
-        groups = groupsFromEvents(memoryEvents);
-      }
-
-      const wanIps = (site.telemetry?.interfaces ?? [])
-        .filter((i) => i.role !== 'internal' || i.zone.toUpperCase() === 'WAN')
-        .map((i) => i.ip);
-      const origin = isAws
-        ? { country: AWS_REGION_COUNTRY[site.connection.aws?.region ?? ''] ?? 'US', ip: null, source: 'region' as const }
-        : detectOrigin(site.syslogs, wanIps, intel);
-      const sinceRaw = typeof req.query.since === 'string' ? req.query.since : '';
-      const since = sinceRaw && Number.isFinite(Date.parse(sinceRaw)) ? new Date(sinceRaw).toISOString() : undefined;
-      // Ranking das portas dos destinos públicos (ignora o filtro de porta) e filtro por porta
-      const isRemote = (g: BehaviorGroup) => remoteOfPair(g.src, g.dst, isAws) !== null;
-      const portStats = buildPortStatsFromGroups(groups, 25, isRemote).ports;
-      const report = buildBehaviorReport({
-        groups: filterGroupsByPort(groups, portSpec),
-        recentEvents: filterEventsByPort(site.syslogs.slice(0, 5000), portSpec),
-        minutes,
-        intel,
-        origin,
-        since,
-        dataSource,
-        truncated,
-        inbound: isAws,
-      });
-      report.dstPort = portSpec.text;
-      report.ports = portStats;
-      res.json(report);
-    })
-  );
-
-  router.post(
-    '/behavior/intel/update',
-    asyncRoute(async (_req, res) => {
-      if (intel.status().updating) {
-        res.status(409).json({ error: 'Já existe uma atualização em andamento.', intel: intel.status() });
-        return;
-      }
-      void intel.update().catch(() => undefined);
-      res.status(202).json({ ok: true, intel: intel.status() });
-    })
-  );
-
-  router.get('/behavior/intel', (_req, res) => {
-    res.json(intel.status());
+  const reportsRoutes = registerReportsRoutes({
+    router,
+    vendor,
+    isAws,
+    usePg,
+    dataDir,
+    pgStore,
+    intel,
+    getStore: () => store,
+    siteFor,
+    buildOverview,
+    flushPendingInserts,
+    schedulePersist: () => schedulePersist(),
+    asyncRoute,
   });
 
-  router.get(
-    '/ports',
-    asyncRoute(async (req, res) => {
-      const site = siteFor(req);
-      const minutes = radarMinutes(req);
-      const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-      if (usePg) {
-        await flushPendingInserts();
-        const agg = await pgStore.aggregatePorts(site.id, sinceIso ?? new Date(0).toISOString(), 25);
-        res.json({
-          minutes,
-          events: agg.events,
-          ports: agg.ports.map((p) => ({ ...p, service: wellKnownService(p.port) })),
-          dataSource: 'database',
-          truncated: agg.timedOut,
-        });
-        return;
-      }
-      const events = sinceIso
-        ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-        : site.syslogs;
-      const { ports, counted } = buildPortStats(events, 25);
-      res.json({ minutes, events: counted, ports, dataSource: 'memory', truncated: false });
-    })
-  );
+  registerRadarAndBehaviorRoutes({
+    router,
+    isAws,
+    usePg,
+    memoryWindow: MEMORY_WINDOW,
+    pgStore,
+    intel,
+    siteFor,
+    flushPendingInserts,
+    asyncRoute,
+    cachedAggregate,
+  });
 
-  router.get(
-    '/sources',
-    asyncRoute(async (req, res) => {
-      const site = siteFor(req);
-      const minutes = radarMinutes(req);
-      const filters = parseRadarFilters(req, res);
-      if (!filters) return;
-      const resolver = getSharedResolver();
-      const lookupHost = (ip: string) => resolver.lookupCached(ip);
-      const { rows, dataSource, truncated } = await loadRadarRows(site, minutes, filters, lookupHost);
-      const report = buildSourcesReport({ rows, minutes, windowSize: site.syslogs.length, lookupHost });
-      report.srcIp = filters.srcIp;
-      report.dst = filters.dst.text;
-      report.dstIps = filters.dst.ips;
-      report.dataSource = dataSource;
-      report.truncated = truncated;
-      res.json(report);
-    })
-  );
+  // --- Syslogs ---------------------------------------------------------------
 
   router.get(
     '/syslogs',
@@ -2904,282 +2359,20 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
   let awsRunning = false;
 
   if (isAws) {
-    router.get('/cloud/config', (req, res) => {
-      res.json(toPublicAwsConfig(siteFor(req).connection.aws));
+    registerAwsCloudRoutes({
+      router,
+      vendor,
+      usePg,
+      memoryWindow: MEMORY_WINDOW,
+      pgStore,
+      authManager,
+      intel,
+      awsIngestor,
+      siteFor,
+      schedulePersist: () => schedulePersist(),
+      asyncRoute,
+      cachedAggregate,
     });
-
-    router.put(
-      '/cloud/config',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        try {
-          site.connection.aws = applyAwsSave(
-            site.connection.aws ?? defaultAwsConfig(),
-            (req.body ?? {}) as AwsConfigSaveBody,
-            (plain) => authManager.encryptSecret(plain)
-          );
-        } catch (err) {
-          if (err instanceof AwsConfigError) {
-            res.status(400).json({ error: err.message });
-            return;
-          }
-          throw err;
-        }
-        site.updatedAt = new Date().toISOString();
-        schedulePersist();
-        res.json(toPublicAwsConfig(site.connection.aws));
-      })
-    );
-
-    // Testa credenciais, bucket e prefixo (com os valores digitados, mesmo sem salvar)
-    router.post(
-      '/cloud/test',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        const body = (req.body ?? {}) as { config?: AwsConfigSaveBody; source?: Record<string, unknown> };
-        const stored = site.connection.aws ?? defaultAwsConfig();
-        let draft = stored;
-        try {
-          draft = body.config ? applyAwsSave(stored, { ...body.config, sources: undefined }, (p) => authManager.encryptSecret(p)) : stored;
-        } catch (err) {
-          if (err instanceof AwsConfigError) {
-            res.status(400).json({ error: err.message });
-            return;
-          }
-          throw err;
-        }
-        if (!body.source) {
-          res.status(400).json({ error: 'Informe a fonte a testar.' });
-          return;
-        }
-        const src = normalizeAwsSource(body.source as never, draft.region);
-        if (src.kind === 'cloudwatch' ? !src.logGroup : !src.bucket) {
-          res.status(400).json({ error: src.kind === 'cloudwatch' ? 'Informe o log group do CloudWatch.' : 'Informe o bucket do S3.' });
-          return;
-        }
-        const cfg = clientConfigFor(
-          { ...site, connection: { ...site.connection, aws: draft } },
-          (enc) => authManager.decryptSecret(enc)
-        );
-        if (!cfg) {
-          res.status(400).json({ error: 'Informe a Access Key e a Secret Access Key.' });
-          return;
-        }
-        res.json(
-          src.kind === 'cloudwatch'
-            ? await testCloudWatchSource(buildLogsClient(cfg, src.region), src)
-            : await testSource(buildS3Client(cfg, src.region), src)
-        );
-      })
-    );
-
-    // Descoberta: lista log groups e prefixos de stream com as credenciais já salvas (ou as digitadas)
-    router.post(
-      '/cloud/discover',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        const body = (req.body ?? {}) as { config?: AwsConfigSaveBody; what?: string; logGroup?: string; region?: string; search?: string };
-        const stored = site.connection.aws ?? defaultAwsConfig();
-        let draft = stored;
-        try {
-          draft = body.config ? applyAwsSave(stored, { ...body.config, sources: undefined }, (p) => authManager.encryptSecret(p)) : stored;
-        } catch (err) {
-          if (err instanceof AwsConfigError) {
-            res.status(400).json({ error: err.message });
-            return;
-          }
-          throw err;
-        }
-        const cfg = clientConfigFor({ ...site, connection: { ...site.connection, aws: draft } }, (enc) => authManager.decryptSecret(enc));
-        if (!cfg) {
-          res.status(400).json({ error: 'Salve a Access Key e a Secret Access Key primeiro (seção Credenciais).' });
-          return;
-        }
-        const region = /^[a-z]{2}-[a-z]+-\d$/.test(String(body.region || '')) ? String(body.region) : draft.region;
-        try {
-          const client = buildLogsClient(cfg, region);
-          if (body.what === 'streams') {
-            const group = String(body.logGroup || '').trim();
-            if (!group) {
-              res.status(400).json({ error: 'Escolha o log group primeiro.' });
-              return;
-            }
-            res.json({ prefixes: await listStreamPrefixes(client, group) });
-          } else {
-            res.json({ groups: await listLogGroups(client, String(body.search || '')) });
-          }
-        } catch (err) {
-          res.status(400).json({ error: describeAwsError(err) });
-        }
-      })
-    );
-
-    async function computeFacets(site: FirewallSiteRecord, kind: AwsLogKind, minutes: number): Promise<FacetReport> {
-    const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-    const memoryEvents = sinceIso
-      ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-      : site.syslogs;
-    const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
-    const needDb =
-      usePg &&
-      (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
-    const bucketSec = bucketSecondsFor(minutes);
-    let result = facetsFromEvents(memoryEvents, kind, bucketSec);
-    let dataSource: 'memory' | 'database' = 'memory';
-    if (needDb) {
-      const specs = FACETS[kind];
-      const agg = await cachedAggregate(`facets|${kind}|${site.id}|${minutes}`, aggTtl(minutes), () =>
-        pgStore.aggregateFacets(site.id, sinceIso ?? new Date(0).toISOString(), KIND_CATEGORY[kind], specs, bucketSec, KIND_SQL_FILTER[kind] ?? '')
-      );
-      if (!agg.timedOut) {
-        dataSource = 'database';
-        result = {
-          totals: agg.totals,
-          timeline: agg.timeline,
-          facets: specs.map((s) => ({
-            id: s.id, title: s.title, hint: s.hint, metric: s.metric ?? 'count', ip: s.ip, country: s.country, port: s.port,
-            items: agg.items[s.id] ?? [],
-          })),
-        };
-      }
-    }
-    // país de cada IP (base offline), para a tela mostrar a bandeira
-    for (const f of result.facets) {
-      if (!f.ip) continue;
-      for (const it of f.items) it.country = intel.lookup(it.key).country;
-    }
-    const report: FacetReport = { kind, minutes, generatedAt: new Date().toISOString(), dataSource, ...result };
-    return report;
-    }
-
-    async function computeHttpInsights(site: FirewallSiteRecord, minutes: number): Promise<HttpInsights> {
-    const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-    const memoryEvents = sinceIso
-      ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-      : site.syslogs;
-    const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
-    const needDb =
-      usePg &&
-      (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
-    const bucketSec = bucketSecondsFor(minutes);
-    let rows = rowsFromAlbEvents(memoryEvents, bucketSec);
-    let dataSource: 'memory' | 'database' = 'memory';
-    let truncated = false;
-    if (needDb) {
-      const agg = await cachedAggregate(`http|${site.id}|${minutes}`, aggTtl(minutes), () =>
-        pgStore.aggregateHttpInsights(site.id, sinceIso ?? new Date(0).toISOString(), 100_000, bucketSec)
-      );
-      if (agg.timedOut) {
-        truncated = true;
-      } else {
-        rows = { groups: agg.groups, clients: agg.clients, extras: agg.extras };
-        truncated = agg.capped;
-        dataSource = 'database';
-      }
-    }
-    return buildHttpInsights({ ...rows, minutes, dataSource, truncated });
-    }
-
-    // Relatório de entrega em HTML (ALB, conexões TLS, VPC Flow Logs e WAF) com a identidade do cliente
-    router.get(
-      '/cloud/report/html',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        const minutes = radarMinutes(req) || 60;
-        const wanted = String(req.query.sections || 'alb,albconn,vpcflow,waf')
-          .split(',')
-          .map((x) => x.trim())
-          .filter((x): x is AwsReportSection => x === 'alb' || x === 'albconn' || x === 'vpcflow' || x === 'waf');
-        const sections = wanted.length > 0 ? wanted : (['alb', 'albconn', 'vpcflow', 'waf'] as AwsReportSection[]);
-        const data: AwsReportData = {
-          minutes,
-          generatedAt: new Date().toISOString(),
-          accountId: /^\d{12}$/.test(site.appliance.serialNumber) ? site.appliance.serialNumber : undefined,
-          region: site.connection.aws?.region,
-        };
-        for (const s of sections) {
-          if (s === 'alb') data.alb = await computeHttpInsights(site, minutes);
-          else data[s] = await computeFacets(site, s, minutes);
-        }
-        const stamp = new Date().toISOString().slice(0, 10);
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename="netanalyzer-aws-${sections.length === 1 ? sections[0] : 'completo'}-${stamp}.html"`);
-        res.send(renderAwsReportHtml(data, sections, site.name, site.branding));
-      })
-    );
-
-    // Facetas por tipo de log (VPC Flow Logs e WAF): top N de cada campo, totais e linha do tempo
-    router.get(
-      '/cloud/facets',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        const kind = String(req.query.kind || '') as AwsLogKind;
-        if (kind !== 'vpcflow' && kind !== 'waf' && kind !== 'albconn') {
-          res.status(400).json({ error: 'Informe kind=vpcflow, waf ou albconn.' });
-          return;
-        }
-        res.json(await computeFacets(site, kind, radarMinutes(req)));
-      })
-    );
-
-    // Resumo por recurso para os cartões da Visão Geral (ALB, VPC Flow Logs e WAF)
-    router.get(
-      '/cloud/summary',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        const minutes = radarMinutes(req);
-        const sinceIso = minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
-        const memoryEvents = sinceIso
-          ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
-          : site.syslogs;
-        const oldestInMemory = site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
-        const needDb =
-          usePg &&
-          (minutes === 0 || site.syslogs.length >= MEMORY_WINDOW || (!!oldestInMemory && !!sinceIso && oldestInMemory > sinceIso));
-        const bucketSec = bucketSecondsFor(minutes);
-        let rows = summarizeCategories(memoryEvents);
-        let timeline = timelineFromEvents(memoryEvents, bucketSec);
-        if (needDb) {
-          const agg = await cachedAggregate(`summary|${site.id}|${minutes}`, aggTtl(minutes), () =>
-            pgStore.aggregateCategorySummary(site.id, sinceIso ?? new Date(0).toISOString(), bucketSec)
-          );
-          if (!agg.timedOut) {
-            rows = agg.rows;
-            timeline = agg.timeline;
-          }
-        }
-        res.json({ minutes, generatedAt: new Date().toISOString(), rows, timeline });
-      })
-    );
-
-    // Análise de aplicação dos access logs do ALB: status, latência, endpoints, navegadores, TLS, WAF e targets
-    router.get(
-      '/cloud/http-insights',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        res.json(await computeHttpInsights(site, radarMinutes(req)));
-      })
-    );
-
-    // Lê agora (em segundo plano); a tela acompanha o andamento pelo status das fontes
-    router.post(
-      '/cloud/sync',
-      asyncRoute(async (req, res) => {
-        const site = siteFor(req);
-        const sourceId = typeof req.body?.sourceId === 'string' ? req.body.sourceId : undefined;
-        const aws = site.connection.aws;
-        if (!aws || aws.sources.length === 0) {
-          res.status(400).json({ error: 'Cadastre ao menos uma fonte de log.' });
-          return;
-        }
-        if (sourceId && awsIngestor.isRunning(site.id, sourceId)) {
-          res.status(409).json({ error: 'Esta fonte já está sendo lida.' });
-          return;
-        }
-        void awsIngestor.syncSite(site, sourceId);
-        res.status(202).json({ ok: true, ...toPublicAwsConfig(aws) });
-      })
-    );
   }
 
   // --- Dados de exemplo / limpeza -------------------------------------------
@@ -3277,116 +2470,19 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
     res.json({ script });
   });
 
-  // --- IA --------------------------------------------------------------------
+  // --- IA e logs da aplicação ------------------------------------------------
 
-  router.get(
-    '/ai/config',
-    asyncRoute(async (_req, res) => {
-      await reloadSharedAiSettings();
-      res.json(toPublicAiConfig(getAiSettingsPlain()));
-    })
-  );
-
-  router.post(
-    '/ai/config',
-    asyncRoute(async (req, res) => {
-      const allowedProviders = new Set<AiProviderType>(['gemini', 'openrouter', 'openai', 'local']);
-      const providerRaw = String(req.body?.provider || 'gemini') as AiProviderType;
-      const provider: AiProviderType = allowedProviders.has(providerRaw) ? providerRaw : 'gemini';
-      const model = String(req.body?.model || '').trim();
-      const baseUrl = String(req.body?.baseUrl || '').trim();
-      const incomingKey = typeof req.body?.apiKey === 'string' ? req.body.apiKey.trim() : undefined;
-      const clearKey = Boolean(req.body?.clearKey);
-      const anonymizeIncoming = typeof req.body?.anonymize === 'boolean' ? req.body.anonymize : undefined;
-
-      await reloadSharedAiSettings();
-
-      let plainKey = getAiSettingsPlain().apiKey;
-      if (clearKey) {
-        plainKey = '';
-      } else if (incomingKey !== undefined && incomingKey.length > 0) {
-        plainKey = incomingKey;
-      }
-
-      const updated: AiProviderSettings = {
-        provider,
-        model: model || (provider === 'gemini' ? DEFAULT_AI_SETTINGS.model : ''),
-        baseUrl,
-        // Chave cifrada em repouso (AES-256-GCM)
-        apiKey: plainKey ? `${ENC_PREFIX}${authManager.encryptSecret(plainKey)}` : '',
-        anonymize: anonymizeIncoming ?? getAiSettingsPlain().anonymize !== false,
-      };
-
-      store.aiSettings = updated;
-      if (usePg) {
-        await pgStore.saveSharedAiSettings(updated);
-      } else {
-        schedulePersist();
-      }
-      res.json(toPublicAiConfig(getAiSettingsPlain()));
-    })
-  );
-
-  router.post(
-    '/ai/chat',
-    asyncRoute(async (req, res) => {
-      const site = siteFor(req);
-      const message = String(req.body?.message || '').trim();
-      const history = Array.isArray(req.body?.history) ? (req.body.history as AiChatMessage[]) : [];
-      const overrideModel = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
-
-      if (!message) {
-        res.status(400).json({ error: 'Digite uma pergunta ou cole um trecho de log para análise.' });
-        return;
-      }
-
-      await reloadSharedAiSettings();
-      const baseSettings = getAiSettingsPlain();
-      const settings: AiProviderSettings = overrideModel
-        ? { ...baseSettings, model: overrideModel }
-        : baseSettings;
-
-      try {
-        const result = await runAiLogAnalysis({
-          settings,
-          overview: buildOverview(site),
-          syslogs: site.syslogs,
-          rules: site.rules,
-          nats: site.nats,
-          history,
-          message,
-        });
-
-        res.json({
-          reply: result.reply,
-          modelUsed: result.modelUsed,
-          provider: result.provider,
-          timestamp: new Date().toISOString(),
-        });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Falha ao consultar o provedor de IA.';
-        appLog.error(vendor, 'ai', `Falha na consulta IA (${settings.provider}/${settings.model})`, errMsg);
-        res.status(502).json({ error: errMsg });
-      }
-    })
-  );
-
-  // --- Logs da aplicação (diagnóstico) ---------------------------------------
-
-  router.get('/app-logs', (req, res) => {
-    const levelRaw = typeof req.query.level === 'string' ? req.query.level : 'all';
-    const level =
-      levelRaw === 'info' || levelRaw === 'warn' || levelRaw === 'error' ? levelRaw : 'all';
-    const search = typeof req.query.search === 'string' ? req.query.search : '';
-    const limit = Number(req.query.limit || 150);
-    res.json({
-      logs: appLog.list({ vendor, level, search, limit }),
-    });
-  });
-
-  router.delete('/app-logs', (_req, res) => {
-    appLog.clear(vendor);
-    res.json({ ok: true });
+  registerAiAndLogsRoutes({
+    router,
+    vendor,
+    usePg,
+    pgStore,
+    authManager,
+    getStore: () => store,
+    siteFor,
+    buildOverview,
+    schedulePersist: () => schedulePersist(),
+    asyncRoute,
   });
 
   // ---------------------------------------------------------------------------
@@ -3470,6 +2566,9 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
 
   async function shutdown(): Promise<void> {
     for (const t of timers) clearInterval(t);
+    pcapRoutes.stop();
+    reportsRoutes.stop();
+    intel.stop();
     await udpReceiver.stop().catch(() => undefined);
     flushUdpBuffer();
     for (const site of Object.values(store.sites)) {

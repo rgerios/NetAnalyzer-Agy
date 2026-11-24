@@ -103,5 +103,5 @@ export function exportAccessReportPdf(report: AccessReportData, siteName: string
     doc.setTextColor(120, 120, 120);
     doc.text(a(`NetAnalyzer - Acessos e Consumo  |  pagina ${i}/${pages}`), 14, 289);
   }
-  doc.save(`fwaudit-acessos-${report.vendor}-${new Date().toISOString().slice(0, 10)}.pdf`);
+  doc.save(`netanalyzer-acessos-${report.vendor}-${new Date().toISOString().slice(0, 10)}.pdf`);
 }

@@ -7,7 +7,7 @@
 #   ./deploy.sh hml        instala o ambiente de HOMOLOGAÇÃO (branch hml, portas 8443/5614/5615)
 #   ./deploy.sh hml --update
 #
-# PRD = branch main, pasta padrão. HML = outro clone (ex.: ~/NetAnalyzer-hml) na branch hml,
+# PRD = branch main, pasta padrão (~/NetAnalyzer-Agy). HML = outro clone (ex.: ~/NetAnalyzer-Agy-hml) na branch hml,
 # com containers, volumes e portas próprios: os dois ambientes podem rodar no mesmo servidor.
 #
 # Pode ser executado quantas vezes for preciso: não recria o .env nem apaga dados.
@@ -36,10 +36,10 @@ done
 
 if [ "$ENVIRONMENT" = "hml" ]; then
   EXPECTED_BRANCH=hml; DEF_HTTPS=8443; DEF_SW_UDP=5614; DEF_FG_UDP=5615
-  CONTAINER_PREFIX=fwaudit-hml; ENV_LABEL="HML (homologação)"
+  CONTAINER_PREFIX=netanalyzer-hml; ENV_LABEL="HML (homologação)"
 else
   EXPECTED_BRANCH=main; DEF_HTTPS=443; DEF_SW_UDP=5514; DEF_FG_UDP=5515
-  CONTAINER_PREFIX=fwaudit; ENV_LABEL="PRD (produção)"
+  CONTAINER_PREFIX=netanalyzer; ENV_LABEL="PRD (produção)"
 fi
 
 info()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -163,8 +163,8 @@ POSTGRES_DB=fwaudit
 POSTGRES_PASSWORD=$(random_secret 32)
 
 # Usado apenas na primeira subida, para criar o administrador inicial.
-FWAUDIT_ADMIN_USER=${ADMIN_USER}
-FWAUDIT_ADMIN_PASS=${ADMIN_PASS}
+NETANALYZER_ADMIN_USER=${ADMIN_USER}
+NETANALYZER_ADMIN_PASS=${ADMIN_PASS}
 
 TZ=${TZ_VALUE}
 FRONTEND_HTTPS_PORT=${DEF_HTTPS}
@@ -172,9 +172,9 @@ SONICWALL_UDP_PORT=${DEF_SW_UDP}
 FORTIGATE_UDP_PORT=${DEF_FG_UDP}
 
 # Ambiente: isola containers, volumes e rede (HML e PRD podem coexistir no mesmo servidor).
-FWAUDIT_ENV=${ENVIRONMENT}
+NETANALYZER_ENV=${ENVIRONMENT}
 CONTAINER_PREFIX=${CONTAINER_PREFIX}
-$( [ "$ENVIRONMENT" = "hml" ] && echo "COMPOSE_PROJECT_NAME=fwaudit-hml" )
+$( [ "$ENVIRONMENT" = "hml" ] && echo "COMPOSE_PROJECT_NAME=netanalyzer-hml" )
 
 # Chave opcional do Gemini para a aba "Análise com IA" (também configurável pela interface).
 GEMINI_API_KEY=
@@ -278,6 +278,9 @@ ensure_env PG_PARALLEL_WORKERS "$PG_PARALLEL"
 FRONTEND_HTTPS_PORT="$(env_value FRONTEND_HTTPS_PORT "${DEF_HTTPS}")"
 SONICWALL_UDP_PORT="$(env_value SONICWALL_UDP_PORT "${DEF_SW_UDP}")"
 FORTIGATE_UDP_PORT="$(env_value FORTIGATE_UDP_PORT "${DEF_FG_UDP}")"
+CONTAINER_PREFIX="$(env_value CONTAINER_PREFIX "${CONTAINER_PREFIX}")"
+PG_USER_EFFECTIVE="$(env_value POSTGRES_USER "fwaudit")"
+PG_DB_EFFECTIVE="$(env_value POSTGRES_DB "fwaudit")"
 
 # ---------------------------------------------------------------------------
 # 4. Firewall do Ubuntu (somente se o UFW estiver ativo)
@@ -345,7 +348,7 @@ CA_FINGERPRINT="$($DOCKER compose exec -T frontend openssl x509 -in /etc/nginx/c
 if [ "$FRONTEND_HTTPS_PORT" = "443" ]; then PANEL_URL="https://${SERVER_IP}"; else PANEL_URL="https://${SERVER_IP}:${FRONTEND_HTTPS_PORT}"; fi
 echo "  Painel (HTTPS):    ${PANEL_URL}   (não há porta HTTP)"
 echo "  Certificado:       gerado localmente. Para o navegador deixar de avisar, importe a CA UMA vez:"
-echo "                     baixe ${PANEL_URL}/fwaudit-ca.crt (aceite o aviso só para baixar) e instale como"
+echo "                     baixe ${PANEL_URL}/netanalyzer-ca.crt (aceite o aviso só para baixar) e instale como"
 echo "                     'Autoridade de Certificação Raiz Confiável'"
 [ -n "$CA_FINGERPRINT" ] && echo "                     Impressão digital (SHA-256) da CA: ${CA_FINGERPRINT}"
 echo "  Syslog SonicWall:  ${SERVER_IP} porta UDP ${SONICWALL_UDP_PORT}"
@@ -362,6 +365,6 @@ fi
 echo
 echo "  Atualizar depois:  ./deploy.sh $( [ "$ENVIRONMENT" = "hml" ] && echo "hml " )--update"
 echo "  Ver logs:          ${DOCKER} compose logs -f"
-echo "  Backup do banco:   ${DOCKER} exec -t ${CONTAINER_PREFIX}-db pg_dump -U fwaudit fwaudit > backup-\$(date +%F).sql"
+echo "  Backup do banco:   ${DOCKER} exec -t ${CONTAINER_PREFIX}-db pg_dump -U ${PG_USER_EFFECTIVE} ${PG_DB_EFFECTIVE} > backup-netanalyzer-\$(date +%F).sql"
 echo
 warn "O painel usa HTTPS com certificado local (CA própria): importe a CA nos navegadores dos administradores e mantenha o acesso restrito à rede interna ou VPN."

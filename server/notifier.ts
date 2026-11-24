@@ -1,3 +1,4 @@
+import { assertSafeOutboundUrl } from './securityGuards.ts';
 import type {
   AlertRecord,
   AlertSeverity,
@@ -53,8 +54,9 @@ export interface NotificationMessage {
 
 const MAX_ALERTS_IN_MESSAGE = 8;
 
-function formatText(msg: NotificationMessage): string {
-  const vendorLabel = msg.vendor === 'fortigate' ? 'FortiGate' : 'SonicWall';
+export function formatNotificationText(msg: NotificationMessage): string {
+  const vendorLabel =
+    msg.vendor === 'aws' ? 'AWS' : msg.vendor === 'fortigate' ? 'FortiGate' : 'SonicWall';
   if (msg.kind === 'test') {
     return `✅ NetAnalyzer: teste de notificação (${vendorLabel} · ${msg.siteName}). O canal está funcionando.`;
   }
@@ -74,15 +76,18 @@ function formatText(msg: NotificationMessage): string {
   return [header, ...lines].join('\n');
 }
 
-async function postJson(url: string, body: unknown): Promise<void> {
-  const parsed = new URL(url);
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error('Protocolo de webhook não suportado (use http ou https).');
-  }
+async function postJson(url: string, body: unknown, checkSsrf = true): Promise<void> {
+  const parsed = checkSsrf
+    ? await assertSafeOutboundUrl(url, {
+        allowLoopback: process.env.ALLOW_LOCAL_WEBHOOKS === 'true',
+        label: 'webhook',
+      })
+    : new URL(url);
   const res = await fetch(parsed.toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    redirect: 'error',
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) {
@@ -100,7 +105,7 @@ export async function sendNotification(
   msg: NotificationMessage
 ): Promise<string[]> {
   const errors: string[] = [];
-  const text = formatText(msg);
+  const text = formatNotificationText(msg);
 
   if (channels.webhookUrl) {
     try {
@@ -131,11 +136,15 @@ export async function sendNotification(
 
   if (channels.telegramBotToken && channels.telegramChatId) {
     try {
-      await postJson(`https://api.telegram.org/bot${channels.telegramBotToken}/sendMessage`, {
-        chat_id: channels.telegramChatId,
-        text: text.slice(0, 4000),
-        disable_web_page_preview: true,
-      });
+      await postJson(
+        `https://api.telegram.org/bot${channels.telegramBotToken}/sendMessage`,
+        {
+          chat_id: channels.telegramChatId,
+          text: text.slice(0, 4000),
+          disable_web_page_preview: true,
+        },
+        false
+      );
     } catch (err) {
       // Nunca propaga a URL (contém o token do bot)
       errors.push(`Telegram: ${err instanceof Error ? err.message.replace(channels.telegramBotToken, '***') : 'falha'}`);

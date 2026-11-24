@@ -247,7 +247,8 @@ Tudo que é genérico existe onde faz sentido; só muda o que depende da API ou 
 | Receptor de syslog (UDP) | ✅ `5514` | ✅ `5515` | — |
 | Leitura do S3 (Flow Logs, WAF, ALB) | — | — | ✅ |
 | Regras / NATs sem uso, relatório de auditoria | ✅ | ✅ (VIPs) | — |
-| Analista de IA, exportação de script CLI | ✅ | ✅ | — |
+| **Analista de IA** (contexto próprio por ambiente) | ✅ | ✅ | ✅ |
+| Exportação de script CLI | ✅ | ✅ | — |
 | Sincronização ao vivo via API | SonicOS REST | FortiOS REST v2 | — |
 
 ---
@@ -258,8 +259,8 @@ Ubuntu zerado — o script instala o Docker, gera o `.env` e sobe tudo:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-git clone https://github.com/rgerios/NetAnalyzer.git ~/NetAnalyzer
-cd ~/NetAnalyzer
+git clone https://github.com/rgerios/NetAnalyzer-Agy.git ~/NetAnalyzer-Agy
+cd ~/NetAnalyzer-Agy
 ./deploy.sh
 ```
 
@@ -354,18 +355,20 @@ merge fast-forward. Detalhes em [`RELEASE.md`](RELEASE.md). Guia de deploy: [`DE
 ## 🔐 Segurança e privacidade
 
 - Self-hosted: logs, regras e relatórios ficam no seu servidor.
-- Entrada somente TLS, API autenticada, senhas com hash scrypt e isolamento de dados por localidade.
+- Entrada somente TLS, API autenticada, proteção CSRF em rotas mutáveis, senhas com hash scrypt e isolamento de dados por localidade.
 - Reputação/GeoIP offline — nenhum IP de destino é enviado a serviço de consulta.
 - O acesso à AWS é **somente leitura**; a Secret Access Key fica criptografada em repouso e nunca volta para o navegador.
+- URLs externas configuráveis (webhooks e provedores de IA) passam por bloqueio contra SSRF (metadata de nuvem, loopback e containers internos).
 - Arquivos PCAP ficam só na memória, com limite de tamanho, tempo ocioso e nenhuma gravação em disco.
 - A análise por IA é opcional e **anonimiza** os dados antes do envio.
-- Os downloads de relatório saem com CSP restrita e proteção contra path traversal.
+- Todos os downloads de relatório em HTML saem com CSP restrita e proteção contra path traversal.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] AWS: **logs de conexão** do ALB (falhas de TLS) e logs de VPN Site-to-Site / Client VPN pelo CloudWatch
+- [x] AWS: **logs de conexão** do ALB (handshakes e falhas de TLS)
+- [ ] AWS: logs de VPN Site-to-Site / Client VPN pelo CloudWatch
 - [ ] AWS: Flow Logs em Parquet, gestão de várias contas com AssumeRole, entrega por Firehose para alto volume
 - [ ] CPU / memória / conexões do SonicWall via endpoints adicionais da API SonicOS
 - [ ] Categorias de destino mais ricas a partir de FQDN no relatório agregado

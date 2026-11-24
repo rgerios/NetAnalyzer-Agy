@@ -3,6 +3,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { AuthManager } from './server/authManager.ts';
 import { PostgresStore } from './server/database.ts';
+import { csrfProtectionMiddleware } from './server/securityGuards.ts';
 import { createVendorEngine, type VendorEngineInstance } from './server/vendorEngine.ts';
 
 dotenv.config();
@@ -34,24 +35,29 @@ async function startApp(): Promise<void> {
   });
   const largeJson = express.json({ limit: '50mb' });
   const largeText = express.text({ limit: '50mb', type: ['text/plain', 'application/octet-stream'] });
-  const largePayloadPaths = new Set([
+  const textIngestPaths = new Set([
     '/api/sonicwall/syslogs/ingest',
     '/api/fortigate/syslogs/ingest',
     '/api/syslogs/ingest',
     '/api/aws/syslogs/ingest',
+  ]);
+  const largePayloadPaths = new Set([
+    ...textIngestPaths,
     '/api/sonicwall/config/import',
     '/api/fortigate/config/import',
     '/api/config/import',
   ]);
   const defaultJson = express.json({ limit: '2mb' });
-  const defaultText = express.text({ limit: '2mb', type: ['text/plain', 'application/octet-stream'] });
   app.use((req, res, next) => {
     const parser = largePayloadPaths.has(req.path) ? largeJson : defaultJson;
     parser(req, res, next);
   });
   app.use((req, res, next) => {
-    const parser = largePayloadPaths.has(req.path) ? largeText : defaultText;
-    parser(req, res, next);
+    if (!textIngestPaths.has(req.path)) {
+      next();
+      return;
+    }
+    largeText(req, res, next);
   });
 
   // Public health check (sempre responde; "ready" indica se a carga inicial terminou)
@@ -173,6 +179,7 @@ async function startApp(): Promise<void> {
   }, 60 * 60 * 1000);
 
   const api = express.Router();
+  api.use(csrfProtectionMiddleware);
 
   // Shared authentication endpoints (valid across both SonicWall & FortiGate containers)
   api.get('/auth/status', async (req, res) => {

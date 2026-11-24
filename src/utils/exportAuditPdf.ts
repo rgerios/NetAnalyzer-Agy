@@ -504,5 +504,5 @@ export function exportAuditReportPdf(report: AuditReportData): void {
   }
 
   const stamp = new Date().toISOString().slice(0, 10);
-  doc.save(`fwaudit-relatorio-${theme.vendor}-${stamp}.pdf`);
+  doc.save(`netanalyzer-relatorio-${theme.vendor}-${stamp}.pdf`);
 }

@@ -67,34 +67,34 @@ backend-fortigate:
   build:
     context: .
     dockerfile: Dockerfile.backend
+  container_name: netanalyzer-backend-fortigate
   environment:
     FW_VENDOR: fortigate
     PORT: 3001
-    SYSLOG_UDP_PORT: 5515
-    SYSLOG_AUTOSTART: "true"
+    SYSLOG_UDP_AUTOSTART: "true"
     DATABASE_URL: postgres://fwaudit:SENHA@db:5432/fwaudit
   ports:
-    - "5515:5515/udp"`;
+    - "\${FORTIGATE_UDP_PORT:-5515}:5515/udp"`;
   }
   return `# Serviço isolado no docker-compose.yml (Ubuntu Server)
 backend-sonicwall:
   build:
     context: .
     dockerfile: Dockerfile.backend
+  container_name: netanalyzer-backend-sonicwall
   environment:
     FW_VENDOR: sonicwall
     PORT: 3000
-    SYSLOG_UDP_PORT: 5514
-    SYSLOG_AUTOSTART: "true"
+    SYSLOG_UDP_AUTOSTART: "true"
     DATABASE_URL: postgres://fwaudit:SENHA@db:5432/fwaudit
   ports:
-    - "5514:5514/udp"`;
+    - "\${SONICWALL_UDP_PORT:-5514}:5514/udp"`;
 }
 
 function getCurlIngestSnippet(vendor: FirewallVendor): string {
   const logPath = vendor === 'fortigate' ? '/var/log/fortigate.log' : '/var/log/sonicwall.log';
-  return `# Enviar arquivo de syslog histórico do Linux para o ambiente ${vendor}:
-curl -X POST http://localhost:8080/api/${vendor}/syslogs/ingest \\
+  return `# Enviar arquivo de syslog histórico do Linux para o ambiente ${vendor} (HTTPS):
+curl -k -X POST https://localhost/api/${vendor}/syslogs/ingest \\
   -b cookies.txt \\
   -H "Content-Type: text/plain" \\
   --data-binary @${logPath}`;

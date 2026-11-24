@@ -4,9 +4,14 @@ import { AlertTriangle, CalendarClock, Download, ExternalLink, FileDown, Loader2
 import type { AccessReportData, FirewallVendor, ReportScheduleState } from '../types.ts';
 import { formatBytes } from '../../shared/destinations.ts';
 import { downloadCsv } from '../utils/csv.ts';
-import { exportAccessReportPdf, periodLabel } from '../utils/exportAccessPdf.ts';
 import { vendorApiUrl } from '../utils/vendorApi.ts';
 import { countryName, flagEmoji } from '../utils/worldGeo.ts';
+
+function periodLabel(minutes: number): string {
+  if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440} dia(s)`;
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60} h`;
+  return `${minutes} min`;
+}
 
 interface AccessReportViewProps {
   vendor: FirewallVendor;
@@ -246,6 +251,7 @@ export function AccessReportView({ vendor, refreshToken }: AccessReportViewProps
   const [minutes, setMinutes] = useState(1440);
   const [report, setReport] = useState<AccessReportData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -288,14 +294,14 @@ export function AccessReportView({ vendor, refreshToken }: AccessReportViewProps
   const exportSources = () =>
     report &&
     downloadCsv(
-      `fwaudit-consumo-por-ip-${new Date().toISOString().slice(0, 10)}.csv`,
+      `netanalyzer-consumo-por-ip-${new Date().toISOString().slice(0, 10)}.csv`,
       ['IP', 'Download (bytes)', 'Upload (bytes)', 'Total (bytes)', '% do total', 'Conexoes', 'Bloqueadas', 'Destinos distintos', 'Categoria principal', 'Pais mais acessado'],
       report.sources.map((s) => [s.ip, s.downloadBytes, s.uploadBytes, s.totalBytes, pct(s.totalBytes, report.totals.totalBytes).toFixed(2), s.connections, s.blocked, s.destinations, s.topCategory ?? '', s.topCountry ? countryName(s.topCountry) : ''])
     );
   const exportDestinations = () =>
     report &&
     downloadCsv(
-      `fwaudit-destinos-${new Date().toISOString().slice(0, 10)}.csv`,
+      `netanalyzer-destinos-${new Date().toISOString().slice(0, 10)}.csv`,
       ['Destino', 'IP', 'Categoria', 'Pais', 'Organizacao (ASN)', 'Conexoes', 'Bloqueadas', 'Volume (bytes)', 'Reputacao'],
       report.destinations.map((d) => [d.host ?? '', d.ip, d.category, d.country ? countryName(d.country) : '', d.asnOrg ?? '', d.connections, d.blocked, d.totalBytes, d.threats.join(' | ')])
     );
@@ -318,8 +324,23 @@ export function AccessReportView({ vendor, refreshToken }: AccessReportViewProps
               </button>
             ))}
           </div>
-          <button type="button" disabled={!report} onClick={() => report && exportAccessReportPdf(report, 'Localidade ativa')} className={btn}>
-            <FileDown className="w-3.5 h-3.5" /> Exportar PDF
+          <button
+            type="button"
+            disabled={!report || exportingPdf}
+            onClick={() => {
+              if (!report) return;
+              setExportingPdf(true);
+              void import('../utils/exportAccessPdf.ts')
+                .then(({ exportAccessReportPdf }) => {
+                  exportAccessReportPdf(report, 'Localidade ativa');
+                })
+                .finally(() => {
+                  setExportingPdf(false);
+                });
+            }}
+            className={btn}
+          >
+            <FileDown className="w-3.5 h-3.5" /> {exportingPdf ? 'Gerando PDF…' : 'Exportar PDF'}
           </button>
           <button type="button" disabled={!report} onClick={exportSources} className={btn}>
             <Download className="w-3.5 h-3.5" /> CSV por IP

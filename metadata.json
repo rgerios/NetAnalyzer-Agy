@@ -1,6 +1,6 @@
 {
-  "name": "SonicAudit — Análise de Syslog, NAT e Firewall SonicWall",
-  "description": "Aplicação web para ambiente Linux dedicada à ingestão e análise de syslogs SonicWall, identificação de políticas NAT sem uso e auditoria de regras de firewall inativas ou sombreadas.",
+  "name": "NetAnalyzer — Análise e Auditoria de Redes (SonicWall, FortiGate e AWS)",
+  "description": "Plataforma self-hosted para investigação de redes: auditoria de firewalls SonicWall e FortiGate, logs da AWS (ALB, VPC Flow Logs e WAF), diagnóstico de capturas PCAP, mapa de tráfego offline e relatórios executivos.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

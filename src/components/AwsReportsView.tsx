@@ -45,13 +45,13 @@ function ResourceReport({ vendor, kind, refreshToken }: { vendor: FirewallVendor
   const exportCsv = () => {
     if (kind === 'alb' && http) {
       downloadCsv(
-        `fwaudit-alb-endpoints-${today()}.csv`,
+        `netanalyzer-alb-endpoints-${today()}.csv`,
         ['Host', 'Metodo', 'Caminho', 'Requisicoes', '4xx', '5xx', 'Latencia media (ms)', 'Latencia max (ms)', 'Lentas', 'Bytes recebidos', 'Bytes enviados'],
         http.endpoints.map((e) => [e.host, e.method, e.path, e.requests, e.errors4xx, e.errors5xx, e.avgMs, e.maxMs, e.slow, e.bytesIn, e.bytesOut])
       );
     } else if (facets) {
       downloadCsv(
-        `fwaudit-${kind}-${today()}.csv`,
+        `netanalyzer-${kind}-${today()}.csv`,
         ['Painel', 'Valor', 'Eventos', 'Bloqueados', 'Bytes'],
         facets.facets.flatMap((f) => f.items.map((i) => [f.title, i.key, i.count, i.blocked, i.bytes]))
       );

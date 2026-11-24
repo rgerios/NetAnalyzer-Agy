@@ -1,7 +1,7 @@
 #!/bin/sh
 # Gera, uma vez, os certificados HTTPS do painel (executado pelo entrypoint do nginx).
 #
-#   - Uma CA local ("FW Audit Local CA", 10 anos) e um certificado de servidor (825 dias) assinado por ela.
+#   - Uma CA local ("NetAnalyzer Local CA", 10 anos) e um certificado de servidor (825 dias) assinado por ela.
 #   - Importe ca.crt uma única vez nos navegadores/computadores que acessam o painel: as renovações do
 #     certificado do servidor continuam confiáveis, pois são assinadas pela mesma CA.
 #   - O certificado cobre localhost, o hostname do container, TLS_HOSTNAMES e TLS_IPS (separados por vírgula).
@@ -15,14 +15,15 @@ DIR="${TLS_DIR:-/etc/nginx/certs}"
 LEAF_DAYS="${TLS_CERT_DAYS:-825}"
 RENEW_BEFORE_DAYS=30
 CA_RENEW_BEFORE_DAYS=90
-MARK=".fwaudit-generated"
+MARK=".netanalyzer-generated"
+LEGACY_MARK=".fwaudit-generated"
 
 log() { echo "[tls] $*"; }
 
 mkdir -p "$DIR"
 cd "$DIR"
 
-if [ -f server.crt ] && [ -f server.key ] && [ ! -f "$MARK" ]; then
+if [ -f server.crt ] && [ -f server.key ] && [ ! -f "$MARK" ] && [ ! -f "$LEGACY_MARK" ]; then
   log "Usando o certificado fornecido em $DIR/server.crt (não será alterado)."
   exit 0
 fi
@@ -71,15 +72,15 @@ fi
 umask 077
 
 if $need_ca; then
-  log "Gerando a CA local do FW Audit (10 anos)."
+  log "Gerando a CA local do NetAnalyzer (10 anos)."
   cat > ca.cnf <<'EOF'
 [req]
 distinguished_name = dn
 x509_extensions = v3_ca
 prompt = no
 [dn]
-CN = FW Audit Local CA
-O = FW Audit
+CN = NetAnalyzer Local CA
+O = NetAnalyzer
 [v3_ca]
 basicConstraints = critical, CA:TRUE, pathlen:0
 keyUsage = critical, keyCertSign, cRLSign
@@ -98,7 +99,7 @@ distinguished_name = dn
 prompt = no
 [dn]
 CN = ${FIRST_NAME:-localhost}
-O = FW Audit
+O = NetAnalyzer
 EOF
 {
   echo "basicConstraints = critical, CA:FALSE"
@@ -126,5 +127,5 @@ chmod 600 ca.key server.key
 chmod 644 ca.crt server.crt san.txt
 touch "$MARK"
 
-log "Certificado pronto. Importe ca.crt nos computadores que acessam o painel (baixe em /fwaudit-ca.crt)."
+log "Certificado pronto. Importe ca.crt nos computadores que acessam o painel (baixe em /netanalyzer-ca.crt)."
 log "Impressão digital da CA: $(openssl x509 -in ca.crt -noout -fingerprint -sha256 | cut -d= -f2)"

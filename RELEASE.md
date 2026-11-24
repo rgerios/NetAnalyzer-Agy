@@ -2,10 +2,10 @@
 
 | Ambiente | Branch | Pasta no servidor | Painel | Syslog UDP (SonicWall / FortiGate) |
 |---|---|---|---|---|
-| **PRD** (produção) | `main` | `~/NetAnalyzer` | `https://IP` (443) | 5514 / 5515 |
-| **HML** (homologação) | `hml` | `~/NetAnalyzer-hml` | `https://IP:8443` | 5614 / 5615 |
+| **PRD** (produção) | `main` | `~/NetAnalyzer-Agy` | `https://IP` (443) | 5514 / 5515 |
+| **HML** (homologação) | `hml` | `~/NetAnalyzer-Agy-hml` | `https://IP:8443` | 5614 / 5615 |
 
-Cada ambiente tem containers (`fwaudit-*` e `fwaudit-hml-*`), volumes, rede, banco e certificados **próprios**.
+Cada ambiente tem containers (`netanalyzer-*` e `netanalyzer-hml-*`), volumes, rede, banco e certificados **próprios**.
 HML e PRD podem rodar no mesmo servidor sem se atrapalhar. Os dados de um nunca aparecem no outro.
 
 ## Regra
@@ -18,10 +18,10 @@ HML e PRD podem rodar no mesmo servidor sem se atrapalhar. Os dados de um nunca 
 # 1) desenvolver a partir de hml
 git checkout hml && git pull
 git checkout -b feat/minha-mudanca
-# ... código, testes (npm test, npx tsc --noEmit) ...
+# ... código, testes (npm test, npm run lint, npm run build) ...
 git checkout hml && git merge --no-ff feat/minha-mudanca && git push origin hml
 
-# 2) publicar em HML (no servidor, pasta ~/NetAnalyzer-hml)
+# 2) publicar em HML (no servidor, pasta ~/NetAnalyzer-Agy-hml)
 ./deploy.sh hml --update
 
 # 3) homologar em https://IP:8443 (apontar um firewall de teste para as portas UDP 5614/5615)
@@ -32,7 +32,7 @@ git merge --ff-only hml          # main passa a ser exatamente o que foi homolog
 git tag -a vAAAA.MM.DD -m "release"   # opcional, facilita rollback
 git push origin main --tags
 
-# 5) publicar em PRD (no servidor, pasta ~/NetAnalyzer)
+# 5) publicar em PRD (no servidor, pasta ~/NetAnalyzer-Agy)
 ./deploy.sh --update
 ```
 
@@ -51,13 +51,13 @@ git checkout main && git revert <commit>   # ou: git reset --hard <tag anterior>
 ./deploy.sh --update
 ```
 
-Antes de mudanças que mexam no banco, faça backup: `docker exec -t fwaudit-db pg_dump -U fwaudit fwaudit > backup-$(date +%F).sql`.
+Antes de mudanças que mexam no banco, faça backup: `docker exec -t netanalyzer-db pg_dump -U fwaudit fwaudit > backup-netanalyzer-$(date +%F).sql`.
 
 ## Primeira instalação do HML no servidor
 
 ```bash
-git clone -b hml git@github.com:rgerios/NetAnalyzer.git ~/NetAnalyzer-hml
-cd ~/NetAnalyzer-hml && ./deploy.sh hml
+git clone -b hml https://github.com/rgerios/NetAnalyzer-Agy.git ~/NetAnalyzer-Agy-hml
+cd ~/NetAnalyzer-Agy-hml && ./deploy.sh hml
 ```
 
 O `deploy.sh` recusa rodar se a pasta estiver na branch errada (HML exige `hml`, PRD exige `main`).

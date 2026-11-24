@@ -19,8 +19,8 @@ RUN apk add --no-cache openssl \
 
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 # Scripts de /docker-entrypoint.d rodam em ordem: este gera os certificados antes do nginx iniciar
-COPY docker/25-fwaudit-tls.sh /docker-entrypoint.d/25-fwaudit-tls.sh
-RUN chmod +x /docker-entrypoint.d/25-fwaudit-tls.sh \
+COPY docker/25-netanalyzer-tls.sh /docker-entrypoint.d/25-netanalyzer-tls.sh
+RUN chmod +x /docker-entrypoint.d/25-netanalyzer-tls.sh \
   && mkdir -p /etc/nginx/certs
 
 COPY --from=builder /app/dist /usr/share/nginx/html

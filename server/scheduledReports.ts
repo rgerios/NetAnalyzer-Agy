@@ -118,7 +118,7 @@ export function createScheduledReports(deps: {
       const id = `${stamp}-${crypto.randomBytes(4).toString('hex')}`;
       const dir = dirFor(siteId);
       await fs.mkdir(dir, { recursive: true });
-      const filename = `fwaudit-acessos-${stamp.slice(0, 8)}-${stamp.slice(8)}-${minutes >= 1440 ? `${Math.round(minutes / 1440)}d` : `${Math.round(minutes / 60)}h`}.html`;
+      const filename = `netanalyzer-acessos-${stamp.slice(0, 8)}-${stamp.slice(8)}-${minutes >= 1440 ? `${Math.round(minutes / 1440)}d` : `${Math.round(minutes / 60)}h`}.html`;
       await fs.writeFile(path.join(dir, `${id}.html`), html);
       const info: ReportFileInfo = {
         id,

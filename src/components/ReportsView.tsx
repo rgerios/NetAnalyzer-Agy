@@ -15,7 +15,6 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import type { AuditReportData, FirewallVendor } from '../types.ts';
-import { exportAuditReportPdf } from '../utils/exportAuditPdf.ts';
 import { vendorApiUrl } from '../utils/vendorApi.ts';
 import { VENDOR_THEMES } from '../utils/vendorTheme.ts';
 
@@ -146,11 +145,13 @@ function AuditReportView({
             disabled={exportingPdf}
             onClick={() => {
               setExportingPdf(true);
-              try {
-                exportAuditReportPdf(report);
-              } finally {
-                setExportingPdf(false);
-              }
+              void import('../utils/exportAuditPdf.ts')
+                .then(({ exportAuditReportPdf }) => {
+                  exportAuditReportPdf(report);
+                })
+                .finally(() => {
+                  setExportingPdf(false);
+                });
             }}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[var(--fw-accent)] rounded-md hover:bg-[var(--fw-accent-hover)] disabled:opacity-50 whitespace-nowrap"
           >

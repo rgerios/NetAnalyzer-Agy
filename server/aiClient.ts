@@ -1,5 +1,6 @@
 import { GoogleGenAI, type Content } from '@google/genai';
 import { createAnonymizer } from './aiAnonymizer.ts';
+import { assertSafeOutboundUrl } from './securityGuards.ts';
 import type {
   AiChatMessage,
   AiProviderSettings,
@@ -356,13 +357,19 @@ async function callOpenAiCompatibleProvider(
     { role: 'user', content: userMessage },
   ];
 
-  const response = await fetch(endpoint, {
+  const safeEndpoint = await assertSafeOutboundUrl(endpoint, {
+    allowLoopback: settings.provider === 'local',
+    label: 'URL base do provedor de IA',
+  });
+
+  const response = await fetch(safeEndpoint.toString(), {
     method: 'POST',
     headers,
     body: JSON.stringify({
       model,
       messages,
     }),
+    redirect: 'error',
     signal: AbortSignal.timeout(60_000),
   });
 

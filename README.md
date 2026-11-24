@@ -248,7 +248,8 @@ Everything generic is available wherever it makes sense; only API- or log-specif
 | Syslog receiver (UDP) | ✅ `5514` | ✅ `5515` | — |
 | Pull from S3 (Flow Logs, WAF, ALB) | — | — | ✅ |
 | Unused rules / NATs, audit report | ✅ | ✅ (VIPs) | — |
-| AI analyst, CLI script export | ✅ | ✅ | — |
+| **AI analyst** (context-aware per environment) | ✅ | ✅ | ✅ |
+| CLI script export | ✅ | ✅ | — |
 | Live sync via API | SonicOS REST | FortiOS REST v2 | — |
 
 ---
@@ -259,8 +260,8 @@ Fresh Ubuntu server — the script installs Docker, generates the `.env` and bri
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-git clone https://github.com/rgerios/NetAnalyzer.git ~/NetAnalyzer
-cd ~/NetAnalyzer
+git clone https://github.com/rgerios/NetAnalyzer-Agy.git ~/NetAnalyzer-Agy
+cd ~/NetAnalyzer-Agy
 ./deploy.sh
 ```
 
@@ -355,18 +356,20 @@ fast-forward merge. Details in [`RELEASE.md`](RELEASE.md). Deployment guide: [`D
 ## 🔐 Security & privacy
 
 - Self-hosted: logs, rules and reports stay on your server.
-- TLS-only entry point, authenticated API, scrypt-hashed passwords, per-site data isolation.
+- TLS-only entry point, authenticated API, CSRF origin/fetch-metadata protection, scrypt-hashed passwords, per-site data isolation.
 - Offline reputation/GeoIP — no destination IP is ever sent to a lookup service.
 - AWS access is **read-only**; the Secret Access Key is encrypted at rest and never sent back to the browser.
+- Outbound webhook and custom AI provider URLs are validated against SSRF (cloud metadata, loopback, internal containers).
 - PCAP files live in memory only, with a size limit, an idle timeout and no disk persistence.
 - AI analysis is opt-in and **anonymizes** data before sending.
-- Report downloads are served with a strict CSP and path-traversal guards.
+- All HTML report downloads are served with a strict CSP and path-traversal guards.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] AWS: ALB **connection logs** (TLS failures) and Site-to-Site / Client VPN logs from CloudWatch
+- [x] AWS: ALB **connection logs** (TLS handshakes and failures)
+- [ ] AWS: Site-to-Site / Client VPN logs from CloudWatch
 - [ ] AWS: Parquet Flow Logs, multi-account AssumeRole management, Firehose push for high volume
 - [ ] SonicWall CPU / memory / connections via additional SonicOS API endpoints
 - [ ] Richer destination categories from FQDN hints in the aggregated report
