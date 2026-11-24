@@ -1,0 +1,177 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${CONTAINER_PREFIX:-fwaudit}-db
+    restart: unless-stopped
+    # Ajuste para disco mecânico (HDD) e tabela de logs grande. Valores sobrescrevíveis no .env.
+    # synchronous_commit=off: o COMMIT não espera o fsync; em queda de energia perde-se no máximo
+    # ~0,6 s de logs recém-chegados, sem corromper o banco. Ganho enorme na ingestão em HDD.
+    shm_size: 1gb
+    command:
+      - postgres
+      - -c
+      - synchronous_commit=off
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1GB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}
+      - -c
+      - max_parallel_workers_per_gather=${PG_PARALLEL_WORKERS:-1}
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - effective_io_concurrency=2
+      - -c
+      - log_min_duration_statement=5000
+      - -c
+      - log_checkpoints=on
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fwaudit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fwaudit_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-fwaudit}
+    volumes:
+      - fwaudit_pgdata:/var/lib/postgresql/data
+    networks:
+      - fwaudit_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fwaudit} -d ${POSTGRES_DB:-fwaudit}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend-sonicwall:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: ${CONTAINER_PREFIX:-fwaudit}-backend-sonicwall
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      TZ: ${TZ:-America/Sao_Paulo}
+      SYSLOG_MEMORY_WINDOW: ${SYSLOG_MEMORY_WINDOW:-50000}
+      SYSLOG_MAX_ROWS_PER_SITE: ${SYSLOG_MAX_ROWS_PER_SITE:-0}
+      FW_VENDOR: sonicwall
+      SERVE_STATIC: "false"
+      DATABASE_URL: postgres://${POSTGRES_USER:-fwaudit}:${POSTGRES_PASSWORD:-fwaudit_change_me}@db:5432/${POSTGRES_DB:-fwaudit}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SONICAUDIT_ADMIN_USER: ${FWAUDIT_ADMIN_USER:-}
+      SONICAUDIT_ADMIN_PASS: ${FWAUDIT_ADMIN_PASS:-}
+    ports:
+      - "${SONICWALL_UDP_PORT:-5514}:5514/udp"
+    volumes:
+      - fwaudit_sonicwall_data:/app/data
+    networks:
+      - fwaudit_net
+
+  backend-fortigate:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: ${CONTAINER_PREFIX:-fwaudit}-backend-fortigate
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      TZ: ${TZ:-America/Sao_Paulo}
+      SYSLOG_MEMORY_WINDOW: ${SYSLOG_MEMORY_WINDOW:-50000}
+      SYSLOG_MAX_ROWS_PER_SITE: ${SYSLOG_MAX_ROWS_PER_SITE:-0}
+      FW_VENDOR: fortigate
+      SERVE_STATIC: "false"
+      DATABASE_URL: postgres://${POSTGRES_USER:-fwaudit}:${POSTGRES_PASSWORD:-fwaudit_change_me}@db:5432/${POSTGRES_DB:-fwaudit}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SONICAUDIT_ADMIN_USER: ${FWAUDIT_ADMIN_USER:-}
+      SONICAUDIT_ADMIN_PASS: ${FWAUDIT_ADMIN_PASS:-}
+    ports:
+      - "${FORTIGATE_UDP_PORT:-5515}:5515/udp"
+    volumes:
+      - fwaudit_fortigate_data:/app/data
+    networks:
+      - fwaudit_net
+
+  backend-aws:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: ${CONTAINER_PREFIX:-fwaudit}-backend-aws
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      TZ: ${TZ:-America/Sao_Paulo}
+      SYSLOG_MEMORY_WINDOW: ${SYSLOG_MEMORY_WINDOW:-50000}
+      SYSLOG_MAX_ROWS_PER_SITE: ${SYSLOG_MAX_ROWS_PER_SITE:-0}
+      FW_VENDOR: aws
+      SERVE_STATIC: "false"
+      DATABASE_URL: postgres://${POSTGRES_USER:-fwaudit}:${POSTGRES_PASSWORD:-fwaudit_change_me}@db:5432/${POSTGRES_DB:-fwaudit}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SONICAUDIT_ADMIN_USER: ${FWAUDIT_ADMIN_USER:-}
+      SONICAUDIT_ADMIN_PASS: ${FWAUDIT_ADMIN_PASS:-}
+    volumes:
+      - fwaudit_aws_data:/app/data
+    networks:
+      - fwaudit_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: ${CONTAINER_PREFIX:-fwaudit}-frontend
+    restart: unless-stopped
+    depends_on:
+      backend-sonicwall:
+        condition: service_healthy
+      backend-fortigate:
+        condition: service_healthy
+      backend-aws:
+        condition: service_healthy
+    # Somente HTTPS, na porta padrão 443 (certificado gerado no primeiro start, guardado no volume
+    # fwaudit_certs). Não há porta HTTP publicada. Para outra porta: FRONTEND_HTTPS_PORT no .env.
+    ports:
+      - "${FRONTEND_HTTPS_PORT:-443}:443"
+    environment:
+      # Nomes e IPs que o certificado deve cobrir, separados por vírgula (o deploy.sh preenche o IP do servidor)
+      TLS_HOSTNAMES: ${TLS_HOSTNAMES:-}
+      TLS_IPS: ${TLS_IPS:-}
+    volumes:
+      - fwaudit_certs:/etc/nginx/certs
+    networks:
+      - fwaudit_net
+
+volumes:
+  fwaudit_pgdata:
+    driver: local
+  fwaudit_sonicwall_data:
+    driver: local
+  fwaudit_fortigate_data:
+    driver: local
+  fwaudit_aws_data:
+    driver: local
+  fwaudit_certs:
+    driver: local
+
+networks:
+  fwaudit_net:
+    driver: bridge

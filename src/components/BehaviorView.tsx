@@ -1,0 +1,532 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, DatabaseZap, Globe2, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import type { BehaviorIntelStatus, BehaviorIp, BehaviorReport, FirewallVendor } from '../types.ts';
+import { formatBytes } from '../../shared/destinations.ts';
+import { vendorApiUrl } from '../utils/vendorApi.ts';
+import { countryName, flagEmoji } from '../utils/worldGeo.ts';
+import { Globe3D } from './Globe3D.tsx';
+import { WorldMap, type FlowBatch, type MapMode } from './WorldMap.tsx';
+import { isPortFilterValid, PortChip, PortFilterInput, PortsRanking } from './PortsPanel.tsx';
+
+interface BehaviorViewProps {
+  vendor: FirewallVendor;
+  refreshToken: number;
+  onInvestigate: (query: string) => void;
+}
+
+const RANGES: Array<{ label: string; minutes: number }> = [
+  { label: '5 min', minutes: 5 },
+  { label: '15 min', minutes: 15 },
+  { label: '1 h', minutes: 60 },
+  { label: '6 h', minutes: 360 },
+  { label: '24 h', minutes: 1440 },
+];
+
+const CATEGORY_LABEL: Record<string, string> = { blacklist: 'Blacklist', botnet: 'Botnet', tor: 'Tor' };
+const CATEGORY_STYLE: Record<string, string> = {
+  blacklist: 'bg-red-100 text-red-800 border-red-200',
+  botnet: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200',
+  tor: 'bg-violet-100 text-violet-800 border-violet-200',
+};
+
+const REALTIME_MS = 5000;
+const fmt = (n: number) => n.toLocaleString('pt-BR');
+const segment = (active: boolean) =>
+  `px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+    active ? 'bg-white text-[var(--fw-heading)] shadow-xs' : 'text-[var(--fw-text-muted)] hover:text-[var(--fw-heading)]'
+  }`;
+
+const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : 'nunca');
+
+export function BehaviorView({ vendor, refreshToken, onInvestigate }: BehaviorViewProps) {
+  const [minutes, setMinutes] = useState(15);
+  const [mode, setMode] = useState<MapMode>('realtime');
+  // 2D (mapa plano) ou 3D (globo giratório); a escolha fica salva neste navegador
+  const [dim, setDim] = useState<'2d' | '3d'>(() => {
+    try {
+      return localStorage.getItem('fwaudit:behavior-dim') === '3d' ? '3d' : '2d';
+    } catch {
+      return '2d';
+    }
+  });
+  const chooseDim = (next: '2d' | '3d') => {
+    setDim(next);
+    try {
+      localStorage.setItem('fwaudit:behavior-dim', next);
+    } catch {
+      // ignora falhas de armazenamento
+    }
+  };
+  const [dstPortInput, setDstPortInput] = useState('');
+  const [dstPort, setDstPort] = useState('');
+  const [report, setReport] = useState<BehaviorReport | null>(null);
+  const [intel, setIntel] = useState<BehaviorIntelStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [showSources, setShowSources] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const timer = useRef<number | null>(null);
+  const [batch, setBatch] = useState<FlowBatch | null>(null);
+  const sinceRef = useRef<string | null>(null);
+  const batchId = useRef(0);
+  const [liveStats, setLiveStats] = useState({ conns: 0, blocked: 0, threat: 0 });
+
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const since = mode === 'realtime' && sinceRef.current ? `&since=${encodeURIComponent(sinceRef.current)}` : '';
+        const res = await fetch(vendorApiUrl(vendor, `/behavior?minutes=${minutes}${since}${dstPort ? `&dstPort=${encodeURIComponent(dstPort)}` : ''}`), { signal });
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as BehaviorReport;
+        setReport(data);
+        setIntel(data.intel);
+        if (mode === 'realtime') {
+          sinceRef.current = data.generatedAt;
+          batchId.current += 1;
+          setBatch({ id: batchId.current, flows: data.flows, sampleEvery: data.flowsSampleEvery });
+          setLiveStats({
+            conns: data.flowsTotal,
+            blocked: data.flows.filter((f) => f.blocked).length * data.flowsSampleEvery,
+            threat: data.flows.filter((f) => f.threat).length * data.flowsSampleEvery,
+          });
+        }
+        setError(null);
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        setError(err instanceof Error ? err.message : 'Falha ao carregar o Behavior.');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [vendor, minutes, mode, dstPort]
+  );
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    sinceRef.current = null;
+    setLoading(true);
+    void load(ctrl.signal);
+    // Tempo real: atualiza a cada 5 s; estático: a cada 30 s
+    const id = window.setInterval(() => void load(ctrl.signal), mode === 'realtime' ? REALTIME_MS : 30000);
+    return () => {
+      ctrl.abort();
+      window.clearInterval(id);
+    };
+  }, [load, mode, refreshToken]);
+
+  // Acompanha a atualização das bases até terminar
+  const pollIntel = useCallback(async () => {
+    try {
+      const res = await fetch(vendorApiUrl(vendor, '/behavior/intel'));
+      if (!res.ok) return;
+      const s = (await res.json()) as BehaviorIntelStatus;
+      setIntel(s);
+      if (s.updating) {
+        timer.current = window.setTimeout(() => void pollIntel(), 3000);
+      } else {
+        const failed = s.sources.filter((x) => x.error).length;
+        setUpdateMsg(failed > 0 ? `Atualização concluída com ${failed} fonte(s) com erro.` : 'Bases atualizadas.');
+        void load();
+      }
+    } catch {
+      /* tenta de novo no próximo ciclo */
+    }
+  }, [vendor, load]);
+
+  useEffect(
+    () => () => {
+      if (timer.current) window.clearTimeout(timer.current);
+    },
+    []
+  );
+
+  const updateNow = async () => {
+    setUpdateMsg(null);
+    try {
+      const res = await fetch(vendorApiUrl(vendor, '/behavior/intel/update'), { method: 'POST' });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; intel?: BehaviorIntelStatus };
+      if (data.intel) setIntel(data.intel);
+      if (!res.ok && res.status !== 409) throw new Error(data.error || `HTTP ${res.status}`);
+      setUpdateMsg('Baixando as bases… isso pode levar alguns minutos.');
+      void pollIntel();
+    } catch (err) {
+      setUpdateMsg(err instanceof Error ? err.message : 'Falha ao iniciar a atualização.');
+    }
+  };
+
+  const topDest = report?.countries.find((c) => c.code !== report.origin.country) ?? null;
+  const topBytes = useMemo(
+    () => [...(report?.countries ?? [])].filter((c) => c.code !== report?.origin.country).sort((a, b) => b.bytes - a.bytes)[0] ?? null,
+    [report]
+  );
+  const abroad = (report?.countries ?? []).filter((c) => c.code !== report?.origin.country).reduce((n, c) => n + c.connections, 0);
+
+  const selectedIps = useMemo<BehaviorIp[]>(
+    () => (selected ? (report?.ips ?? []).filter((i) => i.country === selected) : []),
+    [report, selected]
+  );
+  const maxCountry = report?.countries[0]?.connections ?? 0;
+  const t = report?.totals;
+  const bases = intel?.ready ?? false;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-[var(--fw-border)] rounded-lg p-3 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1 p-1 bg-[var(--fw-surface-alt)] rounded-md" role="group" aria-label="Modo do mapa">
+          <button type="button" onClick={() => setMode('realtime')} aria-pressed={mode === 'realtime'} className={segment(mode === 'realtime')}>
+            Real Time View
+          </button>
+          <button type="button" onClick={() => setMode('static')} aria-pressed={mode === 'static'} className={segment(mode === 'static')}>
+            Static View
+          </button>
+        </div>
+        <div className="flex items-center gap-1 p-1 bg-[var(--fw-surface-alt)] rounded-md" role="group" aria-label="Visualização do mapa">
+          <button type="button" onClick={() => chooseDim('2d')} aria-pressed={dim === '2d'} className={segment(dim === '2d')} title="Mapa plano">
+            2D
+          </button>
+          <button type="button" onClick={() => chooseDim('3d')} aria-pressed={dim === '3d'} className={segment(dim === '3d')} title="Globo giratório">
+            3D
+          </button>
+        </div>
+        <div className="flex items-center gap-1 p-1 bg-[var(--fw-surface-alt)] rounded-md" role="group" aria-label="Período">
+          {RANGES.map((r) => (
+            <button key={r.minutes} type="button" onClick={() => setMinutes(r.minutes)} aria-pressed={minutes === r.minutes} className={segment(minutes === r.minutes)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!isPortFilterValid(dstPortInput)) {
+              setError('Porta de destino inválida. Use números de 0 a 65535, listas (80,443) ou intervalos (8000-8100).');
+              return;
+            }
+            setDstPort(dstPortInput.trim());
+          }}
+        >
+          <PortFilterInput value={dstPortInput} onChange={setDstPortInput} className="w-64 !py-1.5" />
+          <button type="submit" className="px-3 py-1.5 text-xs font-medium text-white bg-[var(--fw-accent)] rounded-md hover:bg-[var(--fw-accent-hover)]">
+            Filtrar porta
+          </button>
+          <PortChip
+            port={dstPort}
+            onClear={() => {
+              setDstPort('');
+              setDstPortInput('');
+            }}
+          />
+        </form>
+        {report && (
+          <p className="text-xs text-[var(--fw-text-muted)]" title={report.origin.ip ? `Detectado pelo IP público ${report.origin.ip}` : 'Sem IP público detectado: assumido Brasil'}>
+            {vendor === 'aws' ? 'Região AWS em' : 'Firewall em'} <strong className="text-[var(--fw-heading)]">{flagEmoji(report.origin.country)} {countryName(report.origin.country)}</strong>
+            <span className="text-[var(--fw-text-subtle)]">
+              {' '}
+              ({report.origin.source === 'fallback' ? 'padrão' : report.origin.source === 'region' ? 'pela região configurada' : `detectado por ${report.origin.ip}`})
+            </span>
+          </p>
+        )}
+        <div className="md:ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void updateNow()}
+            disabled={intel?.updating}
+            className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-md border border-[var(--fw-border-strong)] bg-white text-[var(--fw-heading)] hover:bg-[var(--fw-surface)] disabled:opacity-60"
+          >
+            {intel?.updating ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
+            {intel?.updating ? 'Atualizando bases…' : 'Atualizar bases agora'}
+          </button>
+        </div>
+      </div>
+
+      {!bases && !loading && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900" role="status">
+          <DatabaseZap className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
+          <p>
+            As bases de GeoIP e reputação ainda não foram baixadas. Clique em <strong>Atualizar bases agora</strong> (o servidor precisa de acesso à
+            internet só para baixar; os IPs dos logs nunca saem dele).
+          </p>
+        </div>
+      )}
+      {updateMsg && (
+        <p className="text-xs text-[var(--fw-text-muted)]" role="status">
+          {updateMsg}
+        </p>
+      )}
+      {error && (
+        <p className="text-xs text-red-700" role="alert">
+          {error}
+        </p>
+      )}
+
+      {report && topDest && (
+        <section className="rounded-lg border border-[var(--fw-border)] bg-white p-4" aria-label="Para onde vai o tráfego">
+          <p className="text-sm text-[var(--fw-heading)]">
+            <strong>
+              {abroad > 0 ? Math.round((topDest.connections / Math.max(1, report.totals.connections)) * 100) : 0}% das conexões
+            </strong>{' '}
+            vão para {flagEmoji(topDest.code)} <strong>{countryName(topDest.code)}</strong> ({fmt(topDest.connections)} conexões, {fmt(topDest.ips)} IPs)
+            {topBytes && topBytes.code !== topDest.code ? (
+              <>
+                ; o maior volume de dados vai para {flagEmoji(topBytes.code)} <strong>{countryName(topBytes.code)}</strong> ({formatBytes(topBytes.bytes)})
+              </>
+            ) : (
+              <> e também concentra o maior volume ({formatBytes(topDest.bytes)})</>
+            )}
+            . {report.totals.threatConnections > 0 ? `Atenção: ${fmt(report.totals.threatConnections)} conexões foram para IPs em listas de ameaça.` : 'Nenhuma conexão para IPs em listas de ameaça.'}
+          </p>
+        </section>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[
+          { label: 'Conexões externas', value: fmt(t?.connections ?? 0), hint: `${fmt(report?.publicIps ?? 0)} IPs públicos` },
+          { label: 'Países', value: fmt(t?.countries ?? 0), hint: t?.unknownConnections ? `${fmt(t.unknownConnections)} sem país` : 'todos localizados' },
+          { label: 'Bloqueadas', value: fmt(t?.blocked ?? 0), hint: 'drop / deny / reset' },
+          { label: 'Contato com ameaça', value: fmt(t?.threatConnections ?? 0), hint: 'blacklist, botnet ou Tor', danger: (t?.threatConnections ?? 0) > 0 },
+        ].map((c) => (
+          <div key={c.label} className="bg-white border border-[var(--fw-border)] rounded-lg p-3">
+            <p className="text-[11px] text-[var(--fw-text-muted)]">{c.label}</p>
+            <p className={`text-xl font-semibold tabular-nums ${c.danger ? 'text-red-600' : 'text-[var(--fw-heading)]'}`}>{c.value}</p>
+            <p className="text-[11px] text-[var(--fw-text-subtle)]">{c.hint}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-4 items-start">
+        <section className="bg-white border border-[var(--fw-border)] rounded-lg p-4" aria-label="Mapa mundi de tráfego">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+            <h2 className="text-sm font-semibold text-[var(--fw-heading)] inline-flex items-center gap-2">
+              <Globe2 className="w-4 h-4" aria-hidden="true" />
+              {mode === 'realtime' ? 'Tráfego em tempo real' : 'Mapa de calor por país'}
+            </h2>
+            <p className="text-[11px] text-[var(--fw-text-muted)] tabular-nums">
+              {report ? `${fmt(report.analyzedEvents)} eventos analisados${report.truncated ? ' (agrupamentos menores omitidos)' : ''}` : ''}
+            </p>
+          </div>
+          {loading && !report ? (
+            <div className="h-80 grid place-items-center text-xs text-[var(--fw-text-muted)]">Carregando…</div>
+          ) : (
+            dim === '3d' ? (
+              <Globe3D
+                countries={report?.countries ?? []}
+                originCode={report?.origin.country ?? 'BR'}
+                mode={mode}
+                selected={selected}
+                onSelect={setSelected}
+                batch={batch}
+                replayMs={REALTIME_MS}
+              />
+            ) : (
+              <WorldMap
+                countries={report?.countries ?? []}
+                originCode={report?.origin.country ?? 'BR'}
+                mode={mode}
+                selected={selected}
+                onSelect={setSelected}
+                batch={batch}
+                replayMs={REALTIME_MS}
+              />
+            )
+          )}
+          <p className="mt-2 text-[11px] text-[var(--fw-text-muted)]">
+            {mode === 'realtime' ? (
+              <>
+                <strong>Cada ponto é uma conexão real</strong> do seu log, saindo do firewall (ponto azul) para o país do IP de destino, na ordem em que ocorreu
+                (exibida com ~5 s de atraso{batch && batch.sampleEvery > 1 ? `; 1 ponto = ${batch.sampleEvery} conexões, por haver muitas` : ''}). Azul = liberada e
+                chega ao destino; âmbar = <strong>bloqueada</strong>, morre no meio do caminho; vermelho = destino em lista de ameaça. A espessura da linha mostra a
+                participação do país no período. Agora: {fmt(liveStats.conns)} novas conexões · {fmt(liveStats.blocked)} bloqueadas · {fmt(liveStats.threat)} para ameaças.{' '}
+              </>
+            ) : (
+              'Cor do país = volume de conexões (quente = mais). Pontos vermelhos marcam os destinos, posicionados no centro do país (a base é por país, não por cidade). '
+            )}
+            {dim === '3d' ? 'Arraste o globo para girar; clique em um país para ver os IPs.' : 'Clique em um país para ver os IPs.'}
+          </p>
+        </section>
+
+        <aside className="space-y-4">
+          <PortsRanking
+            ports={report?.ports ?? []}
+            selected={dstPort}
+            loading={loading && !report}
+            onSelect={(p) => {
+              setDstPort(p);
+              setDstPortInput(p);
+            }}
+            title="Portas mais acessadas"
+            initialVisible={6}
+          />
+
+          <section className="bg-white border border-[var(--fw-border)] rounded-lg p-4" aria-label="Países mais acessados">
+            <h3 className="text-sm font-semibold text-[var(--fw-heading)] mb-2">Países mais acessados</h3>
+            {report && report.countries.length === 0 ? (
+              <p className="text-xs text-[var(--fw-text-muted)]">Nenhum destino público localizado no período.</p>
+            ) : (
+              <ol className="space-y-1.5">
+                {(report?.countries ?? []).slice(0, 10).map((c) => (
+                  <li key={c.code}>
+                    <button
+                      type="button"
+                      onClick={() => setSelected(selected === c.code ? null : c.code)}
+                      className={`w-full text-left rounded-md px-2 py-1.5 hover:bg-[var(--fw-surface-alt)] ${selected === c.code ? 'bg-[var(--fw-surface-alt)]' : ''}`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-medium text-[var(--fw-heading)] truncate">
+                          {flagEmoji(c.code)} {countryName(c.code)}
+                        </span>
+                        <span className="tabular-nums text-[var(--fw-text-muted)]">{fmt(c.connections)}</span>
+                      </div>
+                      <div className="mt-1 h-1.5 rounded-full bg-[var(--fw-surface-alt)] overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${Math.max(3, (c.connections / maxCountry) * 100)}%`, background: c.threatIps > 0 ? '#ef4444' : '#38bdf8' }} />
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          <section className="bg-white border border-[var(--fw-border)] rounded-lg p-4" aria-label="IPs em listas de ameaça">
+            <h3 className="text-sm font-semibold text-[var(--fw-heading)] mb-2 inline-flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-red-600" aria-hidden="true" />
+              Reputação: blacklist, botnet e Tor
+            </h3>
+            {!report || report.threats.length === 0 ? (
+              <p className="text-xs text-[var(--fw-text-muted)]">
+                {bases ? 'Nenhum IP contatado consta nas listas de ameaça neste período.' : 'Baixe as bases para habilitar a reputação.'}
+              </p>
+            ) : (
+              <ul className="space-y-2 max-h-72 overflow-auto">
+                {report.threats.slice(0, 30).map((ip) => (
+                  <li key={ip.ip} className="text-xs rounded-md border border-[var(--fw-border)] p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <button type="button" onClick={() => onInvestigate(ip.ip)} className="font-mono font-semibold text-[var(--fw-heading)] hover:underline">
+                        {ip.ip}
+                      </button>
+                      <span className="tabular-nums text-[var(--fw-text-muted)]">{fmt(ip.connections)}×</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {ip.categories.map((c) => (
+                        <span key={c} className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${CATEGORY_STYLE[c]}`}>
+                          {CATEGORY_LABEL[c]}
+                        </span>
+                      ))}
+                      <span className="text-[10px] text-[var(--fw-text-muted)]">{ip.threats.join(', ')}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-[var(--fw-text-muted)]">
+                      {ip.country ? `${flagEmoji(ip.country)} ${countryName(ip.country)}` : 'país desconhecido'}
+                      {ip.asnOrg ? ` · AS${ip.asn} ${ip.asnOrg}` : ''}
+                    </p>
+                    {ip.topSources.length > 0 && (
+                      <p className="mt-0.5 text-[11px] text-[var(--fw-text-muted)]">
+                        Acessado por: {ip.topSources.map((s) => s.ip).join(', ')}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </aside>
+      </div>
+
+      {selected && (
+        <section className="bg-white border border-[var(--fw-border)] rounded-lg p-4" aria-label="IPs do país selecionado">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h3 className="text-sm font-semibold text-[var(--fw-heading)]">
+              {flagEmoji(selected)} IPs em {countryName(selected)}
+            </h3>
+            <button type="button" onClick={() => setSelected(null)} className="text-xs text-[var(--fw-text-muted)] hover:text-[var(--fw-heading)]">
+              Fechar
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-[var(--fw-text-muted)]">
+                  <th className="py-1.5 pr-3 font-medium">IP</th>
+                  <th className="py-1.5 pr-3 font-medium">Organização (ASN)</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Conexões</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Bloq.</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Volume</th>
+                  <th className="py-1.5 font-medium">Reputação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedIps.slice(0, 50).map((ip) => (
+                  <tr key={ip.ip} className="border-t border-[var(--fw-border)]">
+                    <td className="py-1.5 pr-3 font-mono">
+                      <button type="button" onClick={() => onInvestigate(ip.ip)} className="hover:underline">
+                        {ip.ip}
+                      </button>
+                    </td>
+                    <td className="py-1.5 pr-3 text-[var(--fw-text-muted)]">{ip.asnOrg ? `${ip.asnOrg} (AS${ip.asn})` : '—'}</td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums">{fmt(ip.connections)}</td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums">{fmt(ip.blocked)}</td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums">{formatBytes(ip.bytes)}</td>
+                    <td className="py-1.5">
+                      {ip.categories.length === 0 ? (
+                        <span className="text-[var(--fw-text-subtle)]">limpo</span>
+                      ) : (
+                        ip.categories.map((c) => (
+                          <span key={c} className={`mr-1 px-1.5 py-0.5 rounded border text-[10px] font-semibold ${CATEGORY_STYLE[c]}`}>
+                            {CATEGORY_LABEL[c]}
+                          </span>
+                        ))
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {selectedIps.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-3 text-[var(--fw-text-muted)]">
+                      Sem IPs detalhados para este país nos maiores destinos do período.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      <section className="bg-white border border-[var(--fw-border)] rounded-lg p-3 text-xs" aria-label="Bases de inteligência">
+        <button type="button" onClick={() => setShowSources((v) => !v)} className="font-semibold text-[var(--fw-heading)] inline-flex items-center gap-2" aria-expanded={showSources}>
+          Bases offline · última verificação: {when(intel?.lastCheckAt ?? null)}
+          {intel?.sources.some((s) => s.error) && <AlertTriangle className="w-3.5 h-3.5 text-amber-600" aria-label="Há fontes com erro" />}
+        </button>
+        {showSources && (
+          <table className="mt-2 w-full">
+            <thead>
+              <tr className="text-left text-[var(--fw-text-muted)]">
+                <th className="py-1 pr-3 font-medium">Fonte</th>
+                <th className="py-1 pr-3 font-medium text-right">Registros</th>
+                <th className="py-1 pr-3 font-medium">Atualizada em</th>
+                <th className="py-1 font-medium">Situação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(intel?.sources ?? []).map((s) => (
+                <tr key={s.id} className="border-t border-[var(--fw-border)]">
+                  <td className="py-1 pr-3">{s.label}</td>
+                  <td className="py-1 pr-3 text-right tabular-nums">{fmt(s.entries)}</td>
+                  <td className="py-1 pr-3">{when(s.updatedAt)}</td>
+                  <td className={`py-1 ${s.error ? 'text-red-700' : 'text-[var(--fw-text-muted)]'}`}>{s.error ?? (s.updatedAt ? 'ok' : 'não baixada')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="mt-2 text-[11px] text-[var(--fw-text-subtle)]">
+          GeoIP e ASN: DB-IP Lite (CC BY 4.0, db-ip.com). Reputação: FireHOL Level 1, Spamhaus DROP, abuse.ch Feodo Tracker e lista de saída do Tor. Só IPv4. Atualização
+          automática diária (listas) e mensal (GeoIP); desative com INTEL_AUTO_UPDATE=false.
+        </p>
+      </section>
+    </div>
+  );
+}
