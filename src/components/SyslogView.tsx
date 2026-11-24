@@ -43,7 +43,46 @@ interface SyslogViewProps {
   onConsumePendingQuery?: () => void;
   /** AWS: restringe a lista a um recurso (ALB, VPC Flow Logs, WAF). */
   category?: string;
+  /** Filtros próprios do recurso: ALB (método, endpoint, host, target group, IP do target, status) ou WAF (host, método, regra, Web ACL, ação). */
+  eventFilters?: 'alb' | 'waf';
 }
+
+interface HttpFields {
+  method: string;
+  endpoint: string;
+  host: string;
+  targetGroup: string;
+  targetIp: string;
+  status: string;
+  ruleId: string;
+  webAcl: string;
+  wafAction: string;
+}
+const EMPTY_HTTP: HttpFields = { method: '', endpoint: '', host: '', targetGroup: '', targetIp: '', status: '', ruleId: '', webAcl: '', wafAction: '' };
+const HTTP_LABELS: Array<[keyof HttpFields, string]> = [
+  ['method', 'Método'],
+  ['endpoint', 'Endpoint'],
+  ['host', 'Host'],
+  ['targetGroup', 'Target group'],
+  ['targetIp', 'IP do target'],
+  ['status', 'Status HTTP'],
+  ['ruleId', 'Rule ID'],
+  ['webAcl', 'Web ACL'],
+  ['wafAction', 'Ação do WAF'],
+];
+const trimHttp = (h: HttpFields): HttpFields => ({
+  method: h.method.trim(),
+  endpoint: h.endpoint.trim(),
+  host: h.host.trim(),
+  targetGroup: h.targetGroup.trim(),
+  targetIp: h.targetIp.trim(),
+  status: h.status.trim(),
+  ruleId: h.ruleId.trim(),
+  webAcl: h.webAcl.trim(),
+  wafAction: h.wafAction.trim(),
+});
+const FIELD_CLS =
+  'px-3 py-2 text-xs border border-[var(--fw-border-strong)] rounded-md bg-[var(--fw-bg-input)] focus:outline-none focus:ring-2 focus:ring-[var(--fw-accent-mid)]';
 
 export function SyslogView({
   vendor,
@@ -53,7 +92,9 @@ export function SyslogView({
   pendingQuery,
   onConsumePendingQuery,
   category,
+  eventFilters,
 }: SyslogViewProps) {
+  const httpFilters = !!eventFilters;
   const theme = VENDOR_THEMES[vendor];
   // No AWS os dados vêm das fontes S3/CloudWatch, não de syslog: o texto fala em "eventos"
   const isAws = vendor === 'aws';
@@ -83,6 +124,8 @@ export function SyslogView({
     device: 'all',
     minutes: '15',
   });
+  const [httpForm, setHttpForm] = useState<HttpFields>(EMPTY_HTTP);
+  const [httpApplied, setHttpApplied] = useState<HttpFields>(EMPTY_HTTP);
   const [devices, setDevices] = useState<Array<{ id: string; label: string }>>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -115,6 +158,8 @@ export function SyslogView({
       minutes: '15',
     });
     setDevices([]);
+    setHttpForm(EMPTY_HTTP);
+    setHttpApplied(EMPTY_HTTP);
     setFeedback(null);
   }, [vendor]);
 
@@ -144,7 +189,7 @@ export function SyslogView({
   const PAGE_SIZE = 250;
   const [loadingMore, setLoadingMore] = useState(false);
 
-  const fetchLogs = async (offset = 0, filters = appliedFilters) => {
+  const fetchLogs = async (offset = 0, filters = appliedFilters, http = httpApplied) => {
     if (offset === 0) setLoading(true);
     else setLoadingMore(true);
     try {
@@ -161,6 +206,7 @@ export function SyslogView({
         offset: String(offset),
       });
       if (category) params.set('category', category);
+      if (httpFilters) for (const [k, v] of Object.entries(http)) if (v) params.set(k, v);
       const res = await fetch(vendorApiUrl(vendor, `/syslogs?${params.toString()}`));
       if (res.ok) {
         const data = await res.json();
@@ -195,8 +241,8 @@ export function SyslogView({
   };
 
   useEffect(() => {
-    void fetchLogs(0, appliedFilters);
-  }, [vendor, appliedFilters, refreshToken]);
+    void fetchLogs(0, appliedFilters, httpApplied);
+  }, [vendor, appliedFilters, httpApplied, refreshToken]);
 
   const handleApplyFilters = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -204,6 +250,7 @@ export function SyslogView({
       setSearchError('Porta de destino inválida. Use números de 0 a 65535, listas (80,443) ou intervalos (8000-8100).');
       return;
     }
+    if (httpFilters) setHttpApplied(trimHttp(httpForm));
     setAppliedFilters({
       q: query.trim(),
       srcIp: srcIpFilter.trim(),
@@ -217,6 +264,8 @@ export function SyslogView({
   };
 
   const handleClearFilters = () => {
+    setHttpForm(EMPTY_HTTP);
+    setHttpApplied(EMPTY_HTTP);
     setQuery('');
     setSrcIpFilter('');
     setDstIpFilter('');
@@ -238,6 +287,7 @@ export function SyslogView({
   };
 
   const hasPendingFilterChanges =
+    (!!httpFilters && JSON.stringify(trimHttp(httpForm)) !== JSON.stringify(httpApplied)) ||
     query.trim() !== appliedFilters.q ||
     srcIpFilter.trim() !== appliedFilters.srcIp ||
     dstIpFilter.trim() !== appliedFilters.dstIp ||
@@ -261,6 +311,9 @@ export function SyslogView({
   if (appliedFilters.srcIp) activeFilterChips.push(`Origem: ${appliedFilters.srcIp}`);
   if (appliedFilters.dstIp) activeFilterChips.push(`Destino: ${appliedFilters.dstIp}`);
   if (appliedFilters.dstPort) activeFilterChips.push(`Porta destino: ${appliedFilters.dstPort}`);
+  if (httpFilters) {
+    for (const [k, label] of HTTP_LABELS) if (httpApplied[k]) activeFilterChips.push(`${label}: ${httpApplied[k]}`);
+  }
   if (appliedFilters.action !== 'all') {
     const actionLabel =
       appliedFilters.action === 'allow'
@@ -392,6 +445,7 @@ export function SyslogView({
 
   return (
     <div className="space-y-4">
+      {!eventFilters && (
       <IpConsumptionPanel
         vendor={vendor}
         refreshToken={refreshToken}
@@ -427,6 +481,8 @@ export function SyslogView({
         }}
       />
 
+      )}
+
       <UnrecognizedPanel vendor={vendor} refreshToken={refreshToken} />
 
       <form
@@ -454,6 +510,131 @@ export function SyslogView({
             className="w-44 px-3 py-2 text-xs font-mono border border-[var(--fw-border-strong)] rounded-md bg-[var(--fw-bg-input)] focus:outline-none focus:ring-2 focus:ring-[var(--fw-accent-mid)]"
           />
 
+          {eventFilters === 'alb' ? (
+            <>
+              <input
+                type="text"
+                value={httpForm.targetIp}
+                onChange={(e) => setHttpForm({ ...httpForm, targetIp: e.target.value })}
+                placeholder="IP do target (destino)"
+                aria-label="Filtrar por IP do target"
+                className={`w-44 font-mono ${FIELD_CLS}`}
+              />
+              <input
+                type="text"
+                value={httpForm.host}
+                onChange={(e) => setHttpForm({ ...httpForm, host: e.target.value })}
+                placeholder="Host (ex: api.empresa.com)"
+                aria-label="Filtrar por host"
+                className={`w-52 font-mono ${FIELD_CLS}`}
+              />
+              <input
+                type="text"
+                value={httpForm.targetGroup}
+                onChange={(e) => setHttpForm({ ...httpForm, targetGroup: e.target.value })}
+                placeholder="Target group"
+                aria-label="Filtrar por target group"
+                className={`w-44 font-mono ${FIELD_CLS}`}
+              />
+              <input
+                type="text"
+                value={httpForm.endpoint}
+                onChange={(e) => setHttpForm({ ...httpForm, endpoint: e.target.value })}
+                placeholder="Endpoint (ex: /api/pedidos)"
+                aria-label="Filtrar por endpoint"
+                className={`w-56 font-mono ${FIELD_CLS}`}
+              />
+              <select
+                value={httpForm.method}
+                onChange={(e) => setHttpForm({ ...httpForm, method: e.target.value })}
+                aria-label="Filtrar por método HTTP"
+                className={FIELD_CLS}
+              >
+                <option value="">Todos os métodos</option>
+                {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                list="alb-status-codes"
+                value={httpForm.status}
+                onChange={(e) => setHttpForm({ ...httpForm, status: e.target.value })}
+                placeholder="Status (ex: 502 ou 5xx)"
+                aria-label="Filtrar por status HTTP"
+                className={`w-44 font-mono ${FIELD_CLS}`}
+              />
+              <datalist id="alb-status-codes">
+                {['2xx', '3xx', '4xx', '5xx', '200', '201', '204', '301', '302', '304', '400', '401', '403', '404', '429', '500', '502', '503', '504'].map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </>
+          ) : eventFilters === 'waf' ? (
+            <>
+              <input
+                type="text"
+                value={httpForm.host}
+                onChange={(e) => setHttpForm({ ...httpForm, host: e.target.value })}
+                placeholder="Host (ex: api.empresa.com)"
+                aria-label="Filtrar por host"
+                className={`w-52 font-mono ${FIELD_CLS}`}
+              />
+              <input
+                type="text"
+                value={httpForm.endpoint}
+                onChange={(e) => setHttpForm({ ...httpForm, endpoint: e.target.value })}
+                placeholder="URI (ex: /api/login)"
+                aria-label="Filtrar por URI"
+                className={`w-52 font-mono ${FIELD_CLS}`}
+              />
+              <select
+                value={httpForm.method}
+                onChange={(e) => setHttpForm({ ...httpForm, method: e.target.value })}
+                aria-label="Filtrar por método HTTP"
+                className={FIELD_CLS}
+              >
+                <option value="">Todos os métodos</option>
+                {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={httpForm.ruleId}
+                onChange={(e) => setHttpForm({ ...httpForm, ruleId: e.target.value })}
+                placeholder="Rule ID (ex: AWSManagedRules…)"
+                aria-label="Filtrar por Rule ID"
+                className={`w-60 font-mono ${FIELD_CLS}`}
+              />
+              <input
+                type="text"
+                value={httpForm.webAcl}
+                onChange={(e) => setHttpForm({ ...httpForm, webAcl: e.target.value })}
+                placeholder="Web ACL"
+                aria-label="Filtrar por Web ACL"
+                className={`w-44 font-mono ${FIELD_CLS}`}
+              />
+              <select
+                value={httpForm.wafAction}
+                onChange={(e) => setHttpForm({ ...httpForm, wafAction: e.target.value })}
+                aria-label="Filtrar por ação do WAF"
+                className={FIELD_CLS}
+              >
+                <option value="">ALLOW e BLOCK</option>
+                <option value="ALLOW">ALLOW (permitido)</option>
+                <option value="BLOCK">BLOCK (bloqueado)</option>
+                <option value="COUNT">COUNT</option>
+                <option value="CAPTCHA">CAPTCHA</option>
+                <option value="CHALLENGE">CHALLENGE</option>
+              </select>
+            </>
+          ) : (
+            <>
           <input
             type="text"
             value={dstIpFilter}
@@ -463,8 +644,11 @@ export function SyslogView({
             className="w-44 px-3 py-2 text-xs font-mono border border-[var(--fw-border-strong)] rounded-md bg-[var(--fw-bg-input)] focus:outline-none focus:ring-2 focus:ring-[var(--fw-accent-mid)]"
           />
 
-          <PortFilterInput value={dstPortFilter} onChange={setDstPortFilter} className="w-60" />
+              <PortFilterInput value={dstPortFilter} onChange={setDstPortFilter} className="w-60" />
+            </>
+          )}
 
+          {eventFilters !== 'waf' && (
           <div className="flex items-center gap-1 p-1 bg-[var(--fw-surface-alt)] rounded-md">
             {[
               { id: 'all', label: 'Todos' },
@@ -486,6 +670,7 @@ export function SyslogView({
               </button>
             ))}
           </div>
+          )}
 
           <select
             value={severityFilter}

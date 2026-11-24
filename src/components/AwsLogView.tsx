@@ -204,6 +204,7 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
           onDataChanged={onDataChanged}
           onAnalyzeEvent={onAnalyzeEvent}
           category={meta.category}
+          eventFilters={resource === 'alb' ? 'alb' : resource === 'waf' ? 'waf' : undefined}
         />
       )}
 

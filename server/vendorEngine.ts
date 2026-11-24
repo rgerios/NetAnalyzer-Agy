@@ -19,6 +19,7 @@ import { createIntel } from './intel.ts';
 import { aggregateEventsInMemory, buildAccessReport } from './accessReport.ts';
 import { createScheduledReports } from './scheduledReports.ts';
 import { renderAccessReportHtml } from './accessReportHtml.ts';
+import { httpFilterMatches, parseHttpFilter } from './httpFilter.ts';
 import { renderAwsReportHtml, type AwsReportData, type AwsReportSection } from './awsReportHtml.ts';
 import { EMPTY_BRANDING } from '../shared/branding.ts';
 import { applyBranding, BrandingError, sanitizeStoredBranding } from './reportBranding.ts';
@@ -2500,6 +2501,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
         res.status(400).json({ error: 'Filtro de porta inválido. Use números de 0 a 65535, listas (80,443) ou intervalos (8000-8100).' });
         return;
       }
+      const httpFilter = parseHttpFilter(req.query as Record<string, unknown>);
       const categoryParam = String(req.query.category || '').trim();
       const category = Object.values(KIND_CATEGORY).includes(categoryParam) ? categoryParam : '';
       const minutesRaw = Number(req.query.minutes ?? 0);
@@ -2536,6 +2538,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
           device,
           dstPorts: portSpec.ranges,
           category: category || undefined,
+          http: httpFilter ?? undefined,
           sinceIso,
           limit,
           offset,
@@ -2579,6 +2582,7 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
         if (dstIp && !ev.dstIp.toLowerCase().includes(dstIp)) return false;
         if (hasPortFilter(portSpec) && !portMatches(portSpec, ev.dstPort)) return false;
         if (category && ev.categoryName !== category) return false;
+        if (httpFilter && !httpFilterMatches(ev, httpFilter)) return false;
         if (search && !buildSyslogSearchText(ev).includes(search)) return false;
         return true;
       });

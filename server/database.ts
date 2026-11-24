@@ -1,3 +1,4 @@
+import type { HttpFilter } from './httpFilter.ts';
 import { facetSql, ITEM_LIMIT_FOR_DB, type FacetField } from './facets.ts';
 import { extractDestinationHints } from '../shared/destinations.ts';
 import fs from 'node:fs/promises';
@@ -82,6 +83,8 @@ export interface SyslogQuery {
   dstPorts?: Array<[number, number]>;
   /** Nome exato da categoria (ex.: "Application Load Balancer"). */
   category?: string;
+  /** Filtros dos access logs do ALB (método, endpoint, host, target group, IP do target, status). */
+  http?: HttpFilter;
   sinceIso?: string;
   limit: number;
   offset: number;
@@ -1084,6 +1087,55 @@ export class PostgresStore {
     if (q.category) {
       params.push(q.category);
       where.push(`payload_json->>'categoryName' = $${params.length}`);
+    }
+    if (q.http) {
+      const h = q.http;
+      const meta = (key: string) => `LOWER(COALESCE(payload_json#>>'{meta,${key}}', ''))`;
+      where.push(`payload_json#>>'{meta,method}' IS NOT NULL`);
+      if (h.methods.length) {
+        params.push(h.methods);
+        where.push(`payload_json#>>'{meta,method}' = ANY($${params.length}::text[])`);
+      }
+      if (h.host) {
+        params.push(like(h.host));
+        // o host faz parte da mensagem indexada: o índice trigram estreita antes de conferir o campo
+        where.push(`search_text LIKE $${params.length}`);
+        where.push(`${meta('host')} LIKE $${params.length}`);
+      }
+      if (h.endpoint) {
+        params.push(like(h.endpoint));
+        where.push(`(${meta('path')} LIKE $${params.length} OR ${meta('pathGroup')} LIKE $${params.length} OR ${meta('uri')} LIKE $${params.length} OR ${meta('uriGroup')} LIKE $${params.length})`);
+      }
+      if (h.targetGroup) {
+        params.push(like(h.targetGroup));
+        where.push(`${meta('targetGroup')} LIKE $${params.length}`);
+      }
+      if (h.targetIp) {
+        params.push(like(h.targetIp));
+        where.push(`${meta('targetIp')} LIKE $${params.length}`);
+      }
+      if (h.ruleId) {
+        params.push(like(h.ruleId));
+        where.push(`(${meta('ruleId')} LIKE $${params.length} OR ${meta('innerRule')} LIKE $${params.length})`);
+      }
+      if (h.webAcl) {
+        params.push(like(h.webAcl));
+        where.push(`${meta('webAcl')} LIKE $${params.length}`);
+      }
+      if (h.wafActions.length) {
+        params.push(h.wafActions);
+        where.push(`UPPER(COALESCE(payload_json#>>'{meta,wafAction}', '')) = ANY($${params.length}::text[])`);
+      }
+      if (h.statuses.length) {
+        const parts = h.statuses.map((s) => {
+          const isClass = s.endsWith('xx');
+          params.push(isClass ? `${s[0]}%` : s);
+          return isClass
+            ? `payload_json#>>'{meta,status}' LIKE $${params.length}`
+            : `payload_json#>>'{meta,status}' = $${params.length}`;
+        });
+        where.push(`(${parts.join(' OR ')})`);
+      }
     }
     if (q.dstPorts && q.dstPorts.length > 0) {
       const parts: string[] = [];

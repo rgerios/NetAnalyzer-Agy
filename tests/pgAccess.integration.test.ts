@@ -234,4 +234,27 @@ describe('agregação do relatório de acessos (PostgreSQL)', { skip: !URL }, ()
     assert.equal(await store.redactStoredSecrets(), 0, 'segunda execução não faz nada');
     await pool.query(`UPDATE sites SET vendor = 'sonicwall' WHERE id = $1`, [SITE]);
   });
+
+  it('filtra eventos do ALB e do WAF por campos próprios no banco, igual à memória', async () => {
+    const { parseHttpFilter, httpFilterMatches } = await import('../server/httpFilter.ts');
+    const { createAwsSampleDataset } = await import('../server/awsSampleData.ts');
+    const sample = createAwsSampleDataset(Date.now()).events.filter((e) => e.categoryName === 'Application Load Balancer' || e.categoryName === 'AWS WAF');
+    const events = sample.map((e, n) => ({ ...e, id: `http-f-${n}` }));
+    await pool.query('DELETE FROM syslogs WHERE site_id = $1', [SITE]);
+    await store.insertSyslogs(SITE, 'aws', events, (e) => Date.parse(e.ingestedAt));
+    const cases: Array<[string, Record<string, string>, string]> = [
+      ['Application Load Balancer', { method: 'POST', status: '5xx' }, 'ALB método+status'],
+      ['Application Load Balancer', { host: 'rgerios.corp', endpoint: '/health' }, 'ALB host+endpoint'],
+      ['Application Load Balancer', { status: '200,403' }, 'ALB lista de status'],
+      ['AWS WAF', { wafAction: 'BLOCK' }, 'WAF ação'],
+      ['AWS WAF', { webAcl: 'prod-web', method: 'GET' }, 'WAF ACL+método'],
+    ];
+    for (const [category, q, label] of cases) {
+      const f = parseHttpFilter(q)!;
+      const expected = events.filter((e) => e.categoryName === category && httpFilterMatches(e, f)).length;
+      const got = await store.querySyslogs(SITE, { category, http: f, limit: 1000, offset: 0 });
+      assert.equal(got.matched, expected, label);
+      assert.ok(expected > 0, `${label}: o caso precisa ter resultado`);
+    }
+  });
 });
