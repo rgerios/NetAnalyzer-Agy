@@ -446,6 +446,7 @@ export function SyslogView({
   return (
     <div className="space-y-4">
       {!eventFilters && (
+      <>
       <IpConsumptionPanel
         vendor={vendor}
         refreshToken={refreshToken}
@@ -481,6 +482,7 @@ export function SyslogView({
         }}
       />
 
+      </>
       )}
 
       <UnrecognizedPanel vendor={vendor} refreshToken={refreshToken} />
