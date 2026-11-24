@@ -3,6 +3,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { AuthManager } from './server/authManager.ts';
 import { PostgresStore } from './server/database.ts';
+import { httpCompressionMiddleware } from './server/httpCompression.ts';
 import { csrfProtectionMiddleware } from './server/securityGuards.ts';
 import { createVendorEngine, type VendorEngineInstance } from './server/vendorEngine.ts';
 
@@ -33,6 +34,7 @@ async function startApp(): Promise<void> {
     res.setHeader('Referrer-Policy', 'same-origin');
     next();
   });
+  app.use(httpCompressionMiddleware);
   const largeJson = express.json({ limit: '50mb' });
   const largeText = express.text({ limit: '50mb', type: ['text/plain', 'application/octet-stream'] });
   const textIngestPaths = new Set([

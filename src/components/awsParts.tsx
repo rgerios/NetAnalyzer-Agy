@@ -2,7 +2,7 @@ import { Bar, BarChart, CartesianGrid, ComposedChart, Line, ResponsiveContainer,
 import type { HttpEndpointRow, HttpInsights } from '../../shared/httpInsights.ts';
 import { formatBytes } from '../../shared/destinations.ts';
 import { wellKnownService } from '../../shared/ports.ts';
-import { countryName, flagEmoji } from '../utils/worldGeo.ts';
+import { countryName, flagEmoji } from '../utils/countryNames.ts';
 
 export function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'warn' | 'bad' }) {
   return (

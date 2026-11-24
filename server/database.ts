@@ -298,6 +298,11 @@ export class PostgresStore {
       CREATE INDEX IF NOT EXISTS idx_sites_vendor ON sites (vendor, created_at ASC);
       CREATE INDEX IF NOT EXISTS idx_syslogs_site_event ON syslogs (site_id, event_at DESC);
       CREATE INDEX IF NOT EXISTS idx_syslogs_site_ingested ON syslogs (site_id, ingested_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_syslogs_site_action_ingested ON syslogs (site_id, action, ingested_at DESC);
+      -- Acelera agregações por categoria (ALB, VPC Flow Logs, WAF) e relatórios excluindo eventos de sistema
+      CREATE INDEX IF NOT EXISTS idx_syslogs_site_cat_event
+        ON syslogs (site_id, (payload_json->>'categoryName'), event_at DESC)
+        WHERE action <> 'system';
       -- Redundante: nenhuma consulta filtra a tabela por vendor sem site_id (medido: 149 MB e custo de
       -- escrita a cada log). O indice (site_id, ingested_at) ja atende.
       DROP INDEX IF EXISTS idx_syslogs_vendor_site_ingested;
@@ -412,16 +417,48 @@ export class PostgresStore {
   }> {
     const pool = this.getPool();
 
-    const settingsRes = await pool.query<{ key: string; value_json: unknown }>(
-      'SELECT key, value_json FROM app_settings WHERE key IN ($1, $2, $3, $4, $5)',
-      [
-        `active_site_id:${vendor}`,
-        'active_site_id',
-        'ai_settings',
-        'notification_settings',
-        `udp_listener:${vendor}`,
-      ]
-    );
+    const [settingsRes, sitesRes, rulesRes, natsRes, alertsRes] = await Promise.all([
+      pool.query<{ key: string; value_json: unknown }>(
+        'SELECT key, value_json FROM app_settings WHERE key IN ($1, $2, $3, $4, $5)',
+        [
+          `active_site_id:${vendor}`,
+          'active_site_id',
+          'ai_settings',
+          'notification_settings',
+          `udp_listener:${vendor}`,
+        ]
+      ),
+      pool.query<{
+        id: string;
+        vendor: FirewallVendor;
+        name: string;
+        location: string;
+        notes: string;
+        connection_json: FirewallSiteRecord['connection'];
+        appliance_json: ApplianceMetadata;
+        retention_days: number;
+        last_purge_at: Date | null;
+        last_purged_count: number;
+        telemetry_json: TelemetrySnapshot;
+        alert_settings_json: FirewallSiteRecord['alertSettings'];
+        settings_json: Partial<FirewallSiteRecord> | null;
+        created_at: Date;
+        updated_at: Date;
+      }>('SELECT * FROM sites WHERE vendor = $1 ORDER BY created_at ASC', [vendor]),
+      pool.query<{ site_id: string; payload_json: FirewallRule }>(
+        'SELECT site_id, payload_json FROM firewall_rules WHERE vendor = $1 ORDER BY sort_order ASC',
+        [vendor]
+      ),
+      pool.query<{ site_id: string; payload_json: NatPolicy }>(
+        'SELECT site_id, payload_json FROM nat_policies WHERE vendor = $1 ORDER BY sort_order ASC',
+        [vendor]
+      ),
+      pool.query<{ site_id: string; payload_json: AlertRecord }>(
+        'SELECT site_id, payload_json FROM alert_records WHERE vendor = $1 ORDER BY first_seen_at DESC',
+        [vendor]
+      ),
+    ]);
+
     let notificationSettings: Partial<NotificationSettings> | null = null;
     let udpListener: Partial<UdpListenerConfig> | null = null;
     let activeSiteId: string | null = null;
@@ -443,37 +480,6 @@ export class PostgresStore {
     if (!activeSiteId && vendor === 'sonicwall') {
       activeSiteId = legacyActiveSiteId;
     }
-
-    const sitesRes = await pool.query<{
-      id: string;
-      vendor: FirewallVendor;
-      name: string;
-      location: string;
-      notes: string;
-      connection_json: FirewallSiteRecord['connection'];
-      appliance_json: ApplianceMetadata;
-      retention_days: number;
-      last_purge_at: Date | null;
-      last_purged_count: number;
-      telemetry_json: TelemetrySnapshot;
-      alert_settings_json: FirewallSiteRecord['alertSettings'];
-      settings_json: Partial<FirewallSiteRecord> | null;
-      created_at: Date;
-      updated_at: Date;
-    }>('SELECT * FROM sites WHERE vendor = $1 ORDER BY created_at ASC', [vendor]);
-
-    const rulesRes = await pool.query<{ site_id: string; payload_json: FirewallRule }>(
-      'SELECT site_id, payload_json FROM firewall_rules WHERE vendor = $1 ORDER BY sort_order ASC',
-      [vendor]
-    );
-    const natsRes = await pool.query<{ site_id: string; payload_json: NatPolicy }>(
-      'SELECT site_id, payload_json FROM nat_policies WHERE vendor = $1 ORDER BY sort_order ASC',
-      [vendor]
-    );
-    const alertsRes = await pool.query<{ site_id: string; payload_json: AlertRecord }>(
-      'SELECT site_id, payload_json FROM alert_records WHERE vendor = $1 ORDER BY first_seen_at DESC',
-      [vendor]
-    );
 
     // Apenas a janela recente de cada firewall vai para a memória; o histórico completo
     // permanece no banco e é consultado sob demanda.
@@ -1345,24 +1351,26 @@ export class PostgresStore {
     const ready = await pool.query('SELECT 1 FROM syslog_stats_state WHERE site_id = $1', [siteId]);
     if (ready.rows.length === 0) return null;
 
-    const counters = await pool.query<{ action: string; severity: string; total: string }>(
-      'SELECT action, severity, total::text AS total FROM syslog_counters WHERE site_id = $1',
-      [siteId]
-    );
-    const hourlyRes = await pool.query<{ bucket: Date; total: string; allow: string; blocked: string }>(
-      `SELECT bucket, total::text AS total, allow::text AS allow, blocked::text AS blocked
-       FROM syslog_hourly WHERE site_id = $1 AND bucket >= now() - interval '49 hours'`,
-      [siteId]
-    );
-    // MIN/MAX por índice (site_id, ingested_at): duas leituras de uma folha cada
-    const oldestRes = await pool.query<{ t: Date | null }>(
-      'SELECT ingested_at AS t FROM syslogs WHERE site_id = $1 ORDER BY ingested_at ASC LIMIT 1',
-      [siteId]
-    );
-    const newestRes = await pool.query<{ t: Date | null }>(
-      'SELECT ingested_at AS t FROM syslogs WHERE site_id = $1 ORDER BY ingested_at DESC LIMIT 1',
-      [siteId]
-    );
+    const [counters, hourlyRes, oldestRes, newestRes] = await Promise.all([
+      pool.query<{ action: string; severity: string; total: string }>(
+        'SELECT action, severity, total::text AS total FROM syslog_counters WHERE site_id = $1',
+        [siteId]
+      ),
+      pool.query<{ bucket: Date; total: string; allow: string; blocked: string }>(
+        `SELECT bucket, total::text AS total, allow::text AS allow, blocked::text AS blocked
+         FROM syslog_hourly WHERE site_id = $1 AND bucket >= now() - interval '49 hours'`,
+        [siteId]
+      ),
+      // MIN/MAX por índice (site_id, ingested_at): duas leituras de uma folha cada
+      pool.query<{ t: Date | null }>(
+        'SELECT ingested_at AS t FROM syslogs WHERE site_id = $1 ORDER BY ingested_at ASC LIMIT 1',
+        [siteId]
+      ),
+      pool.query<{ t: Date | null }>(
+        'SELECT ingested_at AS t FROM syslogs WHERE site_id = $1 ORDER BY ingested_at DESC LIMIT 1',
+        [siteId]
+      ),
+    ]);
 
     const stats: SyslogStats = {
       total: 0,

@@ -2,11 +2,10 @@ import { feature } from 'topojson-client';
 import { geoCentroid, geoNaturalEarth1, geoPath } from 'd3-geo';
 import type { Topology } from 'topojson-specification';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
-import isoCountries from 'i18n-iso-countries';
-import pt from 'i18n-iso-countries/langs/pt.json';
-import world from 'world-atlas/countries-110m.json';
+import world from 'world-atlas/countries-110m.json' with { type: 'json' };
+import { allCountries, countryName, flagEmoji, isoCountries } from './countryNames.ts';
 
-isoCountries.registerLocale(pt);
+export { allCountries, countryName, flagEmoji };
 
 export const MAP_W = 960;
 export const MAP_H = 480;
@@ -69,22 +68,4 @@ export function getWorldGeo(): WorldGeo {
     project: (lon, lat) => (projection([lon, lat]) ?? [0, 0]) as [number, number],
   };
   return cache;
-}
-
-/** Nome do país em português (cai no código se desconhecido). */
-export function countryName(code: string): string {
-  return isoCountries.getName(code, 'pt') || code;
-}
-
-/** Lista de países (código e nome) para o seletor. */
-export function allCountries(): Array<{ code: string; name: string }> {
-  return Object.entries(isoCountries.getNames('pt', { select: 'official' }))
-    .map(([code, name]) => ({ code, name }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-}
-
-/** Bandeira em emoji a partir do código ISO de 2 letras. */
-export function flagEmoji(code: string): string {
-  if (!/^[A-Z]{2}$/.test(code)) return '';
-  return String.fromCodePoint(...[...code].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
 }

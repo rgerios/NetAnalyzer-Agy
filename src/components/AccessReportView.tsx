@@ -5,7 +5,7 @@ import type { AccessReportData, FirewallVendor, ReportScheduleState } from '../t
 import { formatBytes } from '../../shared/destinations.ts';
 import { downloadCsv } from '../utils/csv.ts';
 import { vendorApiUrl } from '../utils/vendorApi.ts';
-import { countryName, flagEmoji } from '../utils/worldGeo.ts';
+import { countryName, flagEmoji } from '../utils/countryNames.ts';
 
 function periodLabel(minutes: number): string {
   if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440} dia(s)`;

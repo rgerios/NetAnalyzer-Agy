@@ -504,10 +504,23 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
   function appendSyslogsToSite(site: FirewallSiteRecord, newEvents: SyslogEvent[]): number {
     if (newEvents.length === 0) return 0;
 
-    const newestFirst = [...newEvents].reverse();
-    site.syslogs = newestFirst.concat(site.syslogs);
-    const truncated = site.syslogs.length > MEMORY_WINDOW;
-    if (truncated) site.syslogs.length = MEMORY_WINDOW;
+    let truncated = false;
+    if (newEvents.length >= MEMORY_WINDOW) {
+      // Lote maior ou igual à janela inteira: pega apenas os últimos MEMORY_WINDOW sem concatenar o antigo
+      const windowSlice = newEvents.slice(newEvents.length - MEMORY_WINDOW);
+      windowSlice.reverse();
+      site.syslogs = windowSlice;
+      truncated = true;
+    } else {
+      const newestFirst = newEvents.slice().reverse();
+      const keepOld = MEMORY_WINDOW - newestFirst.length;
+      if (site.syslogs.length > keepOld) {
+        site.syslogs = newestFirst.concat(site.syslogs.slice(0, keepOld));
+        truncated = true;
+      } else {
+        site.syslogs = newestFirst.concat(site.syslogs);
+      }
+    }
 
     if (!usePg && truncated) {
       // Sem banco, a janela em memória é todo o armazenamento: os totais refletem só ela
@@ -1123,6 +1136,91 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  // Cache por referência de array: evita varrer 50.000 syslogs e 9 filtros de regras/NATs a cada
+  // polling de /overview quando nada mudou (e limita recálculo em rajadas intensas de UDP).
+  const overviewRankingsCache = new Map<
+    string,
+    {
+      syslogsRef: SyslogEvent[];
+      at: number;
+      hadEvents: boolean;
+      rankings: ReturnType<typeof computeWindowRankings>;
+    }
+  >();
+  const policySummaryCache = new Map<
+    string,
+    {
+      rulesRef: FirewallRule[];
+      natsRef: NatPolicy[];
+      rulesSummary: AuditOverview['rulesSummary'];
+      natsSummary: AuditOverview['natsSummary'];
+    }
+  >();
+
+  function getCachedRankings(site: FirewallSiteRecord): ReturnType<typeof computeWindowRankings> {
+    const now = Date.now();
+    const cached = overviewRankingsCache.get(site.id);
+    if (cached) {
+      if (cached.syslogsRef === site.syslogs) return cached.rankings;
+      if (site.syslogs.length > 0 && cached.hadEvents && now - cached.at < 2000) {
+        return cached.rankings;
+      }
+    }
+    const rankings = computeWindowRankings(site.syslogs);
+    overviewRankingsCache.set(site.id, {
+      syslogsRef: site.syslogs,
+      at: now,
+      hadEvents: site.syslogs.length > 0,
+      rankings,
+    });
+    return rankings;
+  }
+
+  function getCachedPolicySummaries(site: FirewallSiteRecord): {
+    rulesSummary: AuditOverview['rulesSummary'];
+    natsSummary: AuditOverview['natsSummary'];
+  } {
+    const cached = policySummaryCache.get(site.id);
+    if (cached && cached.rulesRef === site.rules && cached.natsRef === site.nats) {
+      return { rulesSummary: cached.rulesSummary, natsSummary: cached.natsSummary };
+    }
+    const rulesSummary: AuditOverview['rulesSummary'] = {
+      total: site.rules.length,
+      active: 0,
+      unused: 0,
+      shadowed: 0,
+      disabled: 0,
+      overpermissive: 0,
+    };
+    for (const r of site.rules) {
+      if (r.status === 'active') rulesSummary.active += 1;
+      else if (r.status === 'unused') rulesSummary.unused += 1;
+      else if (r.status === 'shadowed') rulesSummary.shadowed += 1;
+      else if (r.status === 'disabled') rulesSummary.disabled += 1;
+      else if (r.status === 'overpermissive') rulesSummary.overpermissive += 1;
+    }
+    const natsSummary: AuditOverview['natsSummary'] = {
+      total: site.nats.length,
+      active: 0,
+      unused: 0,
+      disabled: 0,
+      orphaned: 0,
+    };
+    for (const n of site.nats) {
+      if (n.status === 'active') natsSummary.active += 1;
+      else if (n.status === 'unused') natsSummary.unused += 1;
+      else if (n.status === 'disabled') natsSummary.disabled += 1;
+      else if (n.status === 'orphaned') natsSummary.orphaned += 1;
+    }
+    policySummaryCache.set(site.id, {
+      rulesRef: site.rules,
+      natsRef: site.nats,
+      rulesSummary,
+      natsSummary,
+    });
+    return { rulesSummary, natsSummary };
+  }
+
   function buildOverview(site: FirewallSiteRecord): AuditOverview {
     ensureClassified(site);
     const rt = getRuntime(site);
@@ -1140,7 +1238,8 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
     const infoAndNotice = Math.max(0, rt.total - criticalAndError - warning);
 
     const hourlyLogVolume = buildHourlyLogVolume(rt.hourly);
-    const { topBlockedSources, topTargetedPorts, zoneTraffic } = computeWindowRankings(site.syslogs);
+    const { topBlockedSources, topTargetedPorts, zoneTraffic } = getCachedRankings(site);
+    const { rulesSummary, natsSummary } = getCachedPolicySummaries(site);
 
     return {
       vendor,
@@ -1163,21 +1262,8 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
         warning,
         infoAndNotice,
       },
-      rulesSummary: {
-        total: site.rules.length,
-        active: site.rules.filter((r) => r.status === 'active').length,
-        unused: site.rules.filter((r) => r.status === 'unused').length,
-        shadowed: site.rules.filter((r) => r.status === 'shadowed').length,
-        disabled: site.rules.filter((r) => r.status === 'disabled').length,
-        overpermissive: site.rules.filter((r) => r.status === 'overpermissive').length,
-      },
-      natsSummary: {
-        total: site.nats.length,
-        active: site.nats.filter((n) => n.status === 'active').length,
-        unused: site.nats.filter((n) => n.status === 'unused').length,
-        disabled: site.nats.filter((n) => n.status === 'disabled').length,
-        orphaned: site.nats.filter((n) => n.status === 'orphaned').length,
-      },
+      rulesSummary,
+      natsSummary,
       topBlockedSources,
       topTargetedPorts,
       zoneTraffic,
@@ -1681,6 +1767,8 @@ export function createVendorEngine(options: VendorEngineOptions): VendorEngineIn
     }
     delete store.sites[req.params.id];
     runtimes.delete(req.params.id);
+    overviewRankingsCache.delete(req.params.id);
+    policySummaryCache.delete(req.params.id);
     udpBuffer.delete(req.params.id);
     const queued = pendingInserts.get(req.params.id);
     if (queued) {

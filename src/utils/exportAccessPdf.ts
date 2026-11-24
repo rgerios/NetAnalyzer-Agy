@@ -2,7 +2,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { AccessReportData } from '../types.ts';
 import { formatBytes } from '../../shared/destinations.ts';
-import { countryName } from './worldGeo.ts';
+import { countryName } from './countryNames.ts';
 import { VENDOR_THEMES } from './vendorTheme.ts';
 
 /** jsPDF (Helvetica) não desenha todos os acentos: normaliza para ASCII legível. */

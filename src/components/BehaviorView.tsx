@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, DatabaseZap, Globe2, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 import type { BehaviorIntelStatus, BehaviorIp, BehaviorReport, FirewallVendor } from '../types.ts';
 import { formatBytes } from '../../shared/destinations.ts';
 import { vendorApiUrl } from '../utils/vendorApi.ts';
-import { countryName, flagEmoji } from '../utils/worldGeo.ts';
-import { Globe3D } from './Globe3D.tsx';
+import { countryName, flagEmoji } from '../utils/countryNames.ts';
 import { WorldMap, type FlowBatch, type MapMode } from './WorldMap.tsx';
 import { isPortFilterValid, PortChip, PortFilterInput, PortsRanking } from './PortsPanel.tsx';
+
+const Globe3D = lazy(() =>
+  import('./Globe3D.tsx').then((m) => ({ default: m.Globe3D }))
+);
 
 interface BehaviorViewProps {
   vendor: FirewallVendor;
@@ -313,15 +316,23 @@ export function BehaviorView({ vendor, refreshToken, onInvestigate }: BehaviorVi
             <div className="h-80 grid place-items-center text-xs text-[var(--fw-text-muted)]">Carregando…</div>
           ) : (
             dim === '3d' ? (
-              <Globe3D
-                countries={report?.countries ?? []}
-                originCode={report?.origin.country ?? 'BR'}
-                mode={mode}
-                selected={selected}
-                onSelect={setSelected}
-                batch={batch}
-                replayMs={REALTIME_MS}
-              />
+              <Suspense
+                fallback={
+                  <div className="h-80 grid place-items-center text-xs text-[var(--fw-text-muted)]">
+                    Carregando globo 3D…
+                  </div>
+                }
+              >
+                <Globe3D
+                  countries={report?.countries ?? []}
+                  originCode={report?.origin.country ?? 'BR'}
+                  mode={mode}
+                  selected={selected}
+                  onSelect={setSelected}
+                  batch={batch}
+                  replayMs={REALTIME_MS}
+                />
+              </Suspense>
             ) : (
               <WorldMap
                 countries={report?.countries ?? []}

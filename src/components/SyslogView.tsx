@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Download,
   Ban,
@@ -84,6 +84,178 @@ const trimHttp = (h: HttpFields): HttpFields => ({
 const FIELD_CLS =
   'px-3 py-2 text-xs border border-[var(--fw-border-strong)] rounded-md bg-[var(--fw-bg-input)] focus:outline-none focus:ring-2 focus:ring-[var(--fw-accent-mid)]';
 
+const SYSLOG_ROW_EST_H = 40;
+const SYSLOG_OVERSCAN = 25;
+
+function renderSyslogActionBadge(action: SyslogEvent['action']) {
+  if (action === 'allow') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-emerald-800 font-medium">
+        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> Permitido
+      </span>
+    );
+  }
+  if (action === 'drop' || action === 'deny' || action === 'reset') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-red-700 font-medium">
+        <Ban className="w-3.5 h-3.5 shrink-0" /> {action === 'deny' ? 'Negado' : 'Drop'}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[var(--fw-text-muted)] font-medium">
+      <Info className="w-3.5 h-3.5 shrink-0" /> Sistema
+    </span>
+  );
+}
+
+interface SyslogRowItemProps {
+  ev: SyslogEvent;
+  isOpen: boolean;
+  viewW: number;
+  onToggleExpand: (id: string) => void;
+  onToggleDevice: (deviceId: string) => void;
+  onAnalyze: (ev: SyslogEvent) => void;
+}
+
+const SyslogRowItem = memo(function SyslogRowItem({
+  ev,
+  isOpen,
+  viewW,
+  onToggleExpand,
+  onToggleDevice,
+  onAnalyze,
+}: SyslogRowItemProps) {
+  return (
+    <Fragment>
+      <tr
+        onClick={() => onToggleExpand(ev.id)}
+        className="hover:bg-[var(--fw-bg)] cursor-pointer transition-colors"
+      >
+        <td className="py-2.5 pl-4 pr-2 text-[var(--fw-text-subtle)]">
+          {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+        </td>
+        <td className="py-2.5 px-3 font-mono text-[var(--fw-text-muted)] whitespace-nowrap tabular-nums">
+          {ev.timestamp}
+        </td>
+        <td className="py-2.5 px-3 font-mono text-[var(--fw-heading)] whitespace-nowrap">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const id =
+                (ev.firewallHost && ev.firewallHost !== '-' ? ev.firewallHost : '') ||
+                (ev.serialNumber && ev.serialNumber !== '-' ? ev.serialNumber : '');
+              if (id) onToggleDevice(id);
+            }}
+            title="Clique para filtrar apenas este device"
+            className="text-left hover:underline cursor-pointer"
+          >
+            {ev.firewallHost && ev.firewallHost !== '-' ? ev.firewallHost : ev.serialNumber || '-'}
+          </button>
+          {ev.serialNumber && ev.serialNumber !== '-' && ev.firewallHost !== ev.serialNumber && (
+            <span className="block text-[10px] text-[var(--fw-text-subtle)]">{ev.serialNumber}</span>
+          )}
+        </td>
+        <td className="py-2.5 px-3 whitespace-nowrap">{renderSyslogActionBadge(ev.action)}</td>
+        <td className="py-2.5 px-3 font-mono text-[var(--fw-heading)] whitespace-nowrap">
+          {ev.srcIp}
+          {ev.srcPort ? `:${ev.srcPort}` : ''}
+          {ev.srcZone !== '-' && (
+            <span className="text-[var(--fw-text-subtle)] ml-1">({ev.srcZone})</span>
+          )}
+        </td>
+        <td className="py-2.5 px-3 font-mono text-[var(--fw-heading)] whitespace-nowrap">
+          {ev.dstIp}
+          {ev.dstPort ? `:${ev.dstPort}` : ''}
+          {ev.dstZone !== '-' && (
+            <span className="text-[var(--fw-text-subtle)] ml-1">({ev.dstZone})</span>
+          )}
+        </td>
+        <td className="py-2.5 px-3 font-mono text-[var(--fw-text-body)] whitespace-nowrap">
+          {ev.protocol}
+          {ev.dstPort !== null ? `/${ev.dstPort}` : ''}
+        </td>
+        <td className="py-2.5 px-3 font-mono text-[var(--fw-text-muted)] whitespace-nowrap">
+          {ev.ruleRef || '-'}
+          {ev.natRuleRef ? ` · ${ev.natRuleRef}` : ''}
+        </td>
+        <td className="py-2.5 px-4 text-[var(--fw-text-body)] whitespace-nowrap">{ev.message}</td>
+      </tr>
+      {isOpen && (
+        <tr className="bg-[var(--fw-bg)]">
+          <td colSpan={9} className="p-0 border-t border-[var(--fw-border)]">
+            <div className="sticky left-0 px-6 py-4" style={viewW ? { width: viewW } : undefined}>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <span className="text-xs font-semibold text-[var(--fw-heading)]">
+                  Detalhes do evento
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAnalyze(ev);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[var(--fw-accent)] rounded-md hover:bg-[var(--fw-accent-hover)]"
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                  Analisar este evento com IA
+                </button>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs mb-3">
+                <div>
+                  <span className="text-[var(--fw-text-muted)]">Device:</span>{' '}
+                  <span className="font-mono text-[var(--fw-heading)] font-medium">
+                    {ev.firewallHost || '-'}
+                    {ev.serialNumber && ev.serialNumber !== '-' ? ` (${ev.serialNumber})` : ''}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[var(--fw-text-muted)]">Categoria:</span>{' '}
+                  <span className="text-[var(--fw-heading)] font-medium">{ev.categoryName}</span>
+                </div>
+                <div>
+                  <span className="text-[var(--fw-text-muted)]">Severidade:</span>{' '}
+                  <span className="font-mono text-[var(--fw-heading)]">
+                    {ev.severity} (pri {ev.priority})
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[var(--fw-text-muted)]">Bytes Env/Rec:</span>{' '}
+                  <span className="font-mono tabular-nums text-[var(--fw-heading)]">
+                    {ev.bytesSent.toLocaleString('pt-BR')} / {ev.bytesRcvd.toLocaleString('pt-BR')}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[var(--fw-text-muted)]">NAT Traduzido:</span>{' '}
+                  <span className="font-mono text-[var(--fw-heading)]">
+                    {ev.natSrcIp || ev.natDstIp || 'Nenhum'}
+                  </span>
+                </div>
+              </div>
+              {ev.meta && Object.keys(ev.meta).length > 0 && (
+                <dl className="mb-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1 text-[11px]">
+                  {Object.entries(ev.meta).map(([k, v]) => (
+                    <div key={k} className="flex gap-2 min-w-0">
+                      <dt className="text-[var(--fw-text-muted)] shrink-0">
+                        {META_LABELS[k] ?? k}:
+                      </dt>
+                      <dd className="font-mono text-[var(--fw-heading)] break-all">{String(v)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+              <pre className="p-3 bg-[var(--fw-terminal-bg)] text-[var(--fw-terminal-text)] rounded-md font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all">
+                {ev.raw}
+              </pre>
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+});
+
 export function SyslogView({
   vendor,
   refreshToken,
@@ -125,7 +297,10 @@ export function SyslogView({
     minutes: '15',
   });
   const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
   const [viewW, setViewW] = useState(0);
+  const [viewH, setViewH] = useState(600);
+  const [scrollTop, setScrollTop] = useState(0);
   const [httpForm, setHttpForm] = useState<HttpFields>(EMPTY_HTTP);
   const [httpApplied, setHttpApplied] = useState<HttpFields>(EMPTY_HTTP);
   const [devices, setDevices] = useState<Array<{ id: string; label: string }>>([]);
@@ -249,20 +424,50 @@ export function SyslogView({
   useEffect(() => {
     const el = scrollBoxRef.current;
     if (!el) return;
-    const measure = () => setViewW(el.clientWidth);
+    const measure = () => {
+      setViewW(el.clientWidth);
+      setViewH(el.clientHeight || 600);
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+    };
   }, [events.length, loading]);
 
+  const handleTableScroll = useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = scrollBoxRef.current;
+      if (el) setScrollTop(el.scrollTop);
+    });
+  }, []);
+
   /** Pedido de análise com o contexto certo da plataforma (a IA recebe também o contexto do ambiente). */
-  const analysisPrompt = (ev: SyslogEvent): string => {
-    if (isAws) {
-      return `Explique este evento de log da AWS (${ev.categoryName}) em linguagem humana, avalie se há problema de desempenho, erro ou risco de segurança e indique o que verificar ou alterar na AWS:\n\n${ev.raw}`;
-    }
-    return `Explique este evento de syslog do ${theme.label} em linguagem humana, avalie se há risco e indique o que fazer:\n\n${ev.raw}`;
-  };
+  const handleToggleExpand = useCallback((id: string) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  }, []);
+
+  const handleToggleDevice = useCallback((id: string) => {
+    setAppliedFilters((prev) => {
+      const nextDevice = prev.device === id ? 'all' : id;
+      setDeviceFilter(nextDevice);
+      return { ...prev, device: nextDevice };
+    });
+  }, []);
+
+  const handleAnalyzeRow = useCallback(
+    (ev: SyslogEvent) => {
+      const prompt = isAws
+        ? `Explique este evento de log da AWS (${ev.categoryName}) em linguagem humana, avalie se há problema de desempenho, erro ou risco de segurança e indique o que verificar ou alterar na AWS:\n\n${ev.raw}`
+        : `Explique este evento de syslog do ${theme.label} em linguagem humana, avalie se há risco e indique o que fazer:\n\n${ev.raw}`;
+      onAnalyzeEvent(prompt);
+    },
+    [isAws, theme.label, onAnalyzeEvent]
+  );
 
   const handleApplyFilters = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -432,28 +637,6 @@ export function SyslogView({
     } finally {
       setClearing(false);
     }
-  };
-
-  const renderActionLabel = (action: SyslogEvent['action']) => {
-    if (action === 'allow') {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-emerald-800 font-medium">
-          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> Permitido
-        </span>
-      );
-    }
-    if (action === 'drop' || action === 'deny' || action === 'reset') {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-red-700 font-medium">
-          <Ban className="w-3.5 h-3.5 shrink-0" /> {action === 'deny' ? 'Negado' : 'Drop'}
-        </span>
-      );
-    }
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[var(--fw-text-muted)] font-medium">
-        <Info className="w-3.5 h-3.5 shrink-0" /> Sistema
-      </span>
-    );
   };
 
   const pastePlaceholder =
@@ -985,173 +1168,77 @@ export function SyslogView({
           </div>
         ) : (
           <>
-          <div ref={scrollBoxRef} className="overflow-auto max-h-[70vh]" tabIndex={0} aria-label="Lista de eventos (role para ver a mensagem completa)">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 z-10">
-                <tr className="border-b border-[var(--fw-border)] text-[var(--fw-text-muted)] bg-[var(--fw-bg)]">
-                  <th className="py-2.5 pl-4 pr-2 text-left font-medium w-8" />
-                  <th className="py-2.5 px-3 text-left font-medium">Data / Hora</th>
-                  <th className="py-2.5 px-3 text-left font-medium">Device</th>
-                  <th className="py-2.5 px-3 text-left font-medium">Ação</th>
-                  <th className="py-2.5 px-3 text-left font-medium">Origem</th>
-                  <th className="py-2.5 px-3 text-left font-medium">Destino</th>
-                  <th className="py-2.5 px-3 text-left font-medium">Proto / Porta</th>
-                  <th className="py-2.5 px-3 text-left font-medium">Regra / NAT</th>
-                  <th className="py-2.5 px-4 text-left font-medium">Mensagem</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--fw-border-soft)]">
-                {events.map((ev) => {
-                  const isOpen = expandedId === ev.id;
-                  return (
-                    <Fragment key={ev.id}>
-                      <tr
-                        onClick={() => setExpandedId(isOpen ? null : ev.id)}
-                        className="hover:bg-[var(--fw-bg)] cursor-pointer transition-colors"
-                      >
-                        <td className="py-2.5 pl-4 pr-2 text-[var(--fw-text-subtle)]">
-                          {isOpen ? (
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          ) : (
-                            <ChevronRight className="w-3.5 h-3.5" />
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[var(--fw-text-muted)] whitespace-nowrap tabular-nums">
-                          {ev.timestamp}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[var(--fw-heading)] whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const id =
-                                (ev.firewallHost && ev.firewallHost !== '-' ? ev.firewallHost : '') ||
-                                (ev.serialNumber && ev.serialNumber !== '-' ? ev.serialNumber : '');
-                              if (id) {
-                                const nextDevice = appliedFilters.device === id ? 'all' : id;
-                                setDeviceFilter(nextDevice);
-                                setAppliedFilters((prev) => ({ ...prev, device: nextDevice }));
-                              }
-                            }}
-                            title="Clique para filtrar apenas este device"
-                            className="text-left hover:underline cursor-pointer"
-                          >
-                            {ev.firewallHost && ev.firewallHost !== '-'
-                              ? ev.firewallHost
-                              : ev.serialNumber || '-'}
-                          </button>
-                          {ev.serialNumber &&
-                            ev.serialNumber !== '-' &&
-                            ev.firewallHost !== ev.serialNumber && (
-                              <span className="block text-[10px] text-[var(--fw-text-subtle)]">
-                                {ev.serialNumber}
-                              </span>
-                            )}
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">{renderActionLabel(ev.action)}</td>
-                        <td className="py-2.5 px-3 font-mono text-[var(--fw-heading)] whitespace-nowrap">
-                          {ev.srcIp}
-                          {ev.srcPort ? `:${ev.srcPort}` : ''}
-                          {ev.srcZone !== '-' && (
-                            <span className="text-[var(--fw-text-subtle)] ml-1">({ev.srcZone})</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[var(--fw-heading)] whitespace-nowrap">
-                          {ev.dstIp}
-                          {ev.dstPort ? `:${ev.dstPort}` : ''}
-                          {ev.dstZone !== '-' && (
-                            <span className="text-[var(--fw-text-subtle)] ml-1">({ev.dstZone})</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[var(--fw-text-body)] whitespace-nowrap">
-                          {ev.protocol}
-                          {ev.dstPort !== null ? `/${ev.dstPort}` : ''}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[var(--fw-text-muted)] whitespace-nowrap">
-                          {ev.ruleRef || '-'}
-                          {ev.natRuleRef ? ` · ${ev.natRuleRef}` : ''}
-                        </td>
-                        <td className="py-2.5 px-4 text-[var(--fw-text-body)] whitespace-nowrap">
-                          {ev.message}
-                        </td>
+          {(() => {
+            const virtualize = events.length > 100;
+            let startIdx = virtualize
+              ? Math.max(0, Math.floor(scrollTop / SYSLOG_ROW_EST_H) - SYSLOG_OVERSCAN)
+              : 0;
+            let endIdx = virtualize
+              ? Math.min(
+                  events.length,
+                  Math.ceil((scrollTop + viewH) / SYSLOG_ROW_EST_H) + SYSLOG_OVERSCAN
+                )
+              : events.length;
+            if (virtualize && expandedId) {
+              const expIdx = events.findIndex((e) => e.id === expandedId);
+              if (expIdx >= 0) {
+                if (expIdx < startIdx && startIdx - expIdx <= 40) startIdx = expIdx;
+                if (expIdx >= endIdx && expIdx - endIdx <= 40) endIdx = expIdx + 1;
+              }
+            }
+            const topPad = startIdx * SYSLOG_ROW_EST_H;
+            const bottomPad = Math.max(0, (events.length - endIdx) * SYSLOG_ROW_EST_H);
+            const slice = virtualize ? events.slice(startIdx, endIdx) : events;
+
+            return (
+              <div
+                ref={scrollBoxRef}
+                onScroll={handleTableScroll}
+                className="overflow-auto max-h-[70vh]"
+                tabIndex={0}
+                aria-label="Lista de eventos (role para ver a mensagem completa)"
+              >
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="border-b border-[var(--fw-border)] text-[var(--fw-text-muted)] bg-[var(--fw-bg)]">
+                      <th className="py-2.5 pl-4 pr-2 text-left font-medium w-8" />
+                      <th className="py-2.5 px-3 text-left font-medium">Data / Hora</th>
+                      <th className="py-2.5 px-3 text-left font-medium">Device</th>
+                      <th className="py-2.5 px-3 text-left font-medium">Ação</th>
+                      <th className="py-2.5 px-3 text-left font-medium">Origem</th>
+                      <th className="py-2.5 px-3 text-left font-medium">Destino</th>
+                      <th className="py-2.5 px-3 text-left font-medium">Proto / Porta</th>
+                      <th className="py-2.5 px-3 text-left font-medium">Regra / NAT</th>
+                      <th className="py-2.5 px-4 text-left font-medium">Mensagem</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--fw-border-soft)]">
+                    {topPad > 0 && (
+                      <tr aria-hidden="true" style={{ height: topPad }}>
+                        <td colSpan={9} className="p-0 border-0" />
                       </tr>
-                      {isOpen && (
-                        <tr className="bg-[var(--fw-bg)]">
-                          <td colSpan={9} className="p-0 border-t border-[var(--fw-border)]">
-                            <div className="sticky left-0 px-6 py-4" style={viewW ? { width: viewW } : undefined}>
-                            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                              <span className="text-xs font-semibold text-[var(--fw-heading)]">Detalhes do evento</span>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onAnalyzeEvent(analysisPrompt(ev));
-                                }}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[var(--fw-accent)] rounded-md hover:bg-[var(--fw-accent-hover)]"
-                              >
-                                <Bot className="w-3.5 h-3.5" />
-                                Analisar este evento com IA
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs mb-3">
-                              <div>
-                                <span className="text-[var(--fw-text-muted)]">Device:</span>{' '}
-                                <span className="font-mono text-[var(--fw-heading)] font-medium">
-                                  {ev.firewallHost || '-'}
-                                  {ev.serialNumber && ev.serialNumber !== '-'
-                                    ? ` (${ev.serialNumber})`
-                                    : ''}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[var(--fw-text-muted)]">Categoria:</span>{' '}
-                                <span className="text-[var(--fw-heading)] font-medium">
-                                  {ev.categoryName}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[var(--fw-text-muted)]">Severidade:</span>{' '}
-                                <span className="font-mono text-[var(--fw-heading)]">
-                                  {ev.severity} (pri {ev.priority})
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[var(--fw-text-muted)]">Bytes Env/Rec:</span>{' '}
-                                <span className="font-mono tabular-nums text-[var(--fw-heading)]">
-                                  {ev.bytesSent.toLocaleString('pt-BR')} /{' '}
-                                  {ev.bytesRcvd.toLocaleString('pt-BR')}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[var(--fw-text-muted)]">NAT Traduzido:</span>{' '}
-                                <span className="font-mono text-[var(--fw-heading)]">
-                                  {ev.natSrcIp || ev.natDstIp || 'Nenhum'}
-                                </span>
-                              </div>
-                            </div>
-                            {ev.meta && Object.keys(ev.meta).length > 0 && (
-                              <dl className="mb-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1 text-[11px]">
-                                {Object.entries(ev.meta).map(([k, v]) => (
-                                  <div key={k} className="flex gap-2 min-w-0">
-                                    <dt className="text-[var(--fw-text-muted)] shrink-0">{META_LABELS[k] ?? k}:</dt>
-                                    <dd className="font-mono text-[var(--fw-heading)] break-all">{String(v)}</dd>
-                                  </div>
-                                ))}
-                              </dl>
-                            )}
-                            <pre className="p-3 bg-[var(--fw-terminal-bg)] text-[var(--fw-terminal-text)] rounded-md font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all">
-                              {ev.raw}
-                            </pre>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                    )}
+                    {slice.map((ev) => (
+                      <SyslogRowItem
+                        key={ev.id}
+                        ev={ev}
+                        isOpen={expandedId === ev.id}
+                        viewW={viewW}
+                        onToggleExpand={handleToggleExpand}
+                        onToggleDevice={handleToggleDevice}
+                        onAnalyze={handleAnalyzeRow}
+                      />
+                    ))}
+                    {bottomPad > 0 && (
+                      <tr aria-hidden="true" style={{ height: bottomPad }}>
+                        <td colSpan={9} className="p-0 border-0" />
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
           <div>
             {events.length < matched && (
               <div className="px-4 py-3 border-t border-[var(--fw-border)] flex justify-center">

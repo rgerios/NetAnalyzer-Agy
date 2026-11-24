@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -179,6 +179,8 @@ export function PcapView({ vendor }: PcapViewProps) {
       alive = false;
     };
   }, [api]);
+
+  const handleSelectPacket = useCallback((no: number) => setSelected(no), []);
 
   const resetView = () => {
     setRows([]);
@@ -548,7 +550,7 @@ export function PcapView({ vendor }: PcapViewProps) {
               matched={matched}
               loading={loadingRows}
               selected={selected}
-              onSelect={setSelected}
+              onSelect={handleSelectPacket}
               scrollRef={scrollRef}
               onScroll={onScroll}
               detail={detail}
@@ -688,6 +690,39 @@ function FilterBar(props: {
 
 // ---------------------------------------------------------------------------
 
+const PacketRowItem = memo(function PacketRowItem({
+  row,
+  isSelected,
+  onSelect,
+}: {
+  row: PcapPacketRow;
+  isSelected: boolean;
+  onSelect: (no: number) => void;
+}) {
+  return (
+    <tr
+      onClick={() => onSelect(row.no)}
+      className="cursor-pointer"
+      style={{
+        height: ROW_H,
+        background: isSelected ? 'var(--fw-accent)' : rowBackground(row),
+        color: isSelected ? '#fff' : undefined,
+      }}
+    >
+      <td className="px-2 tabular-nums whitespace-nowrap">{row.no}</td>
+      <td className="px-2 tabular-nums whitespace-nowrap">{fmtTime(row.t)}</td>
+      <td className="px-2 whitespace-nowrap">{row.src}</td>
+      <td className="px-2 whitespace-nowrap">{row.dst}</td>
+      <td className="px-2 whitespace-nowrap">{row.proto}</td>
+      <td className="px-2 tabular-nums whitespace-nowrap">{row.len}</td>
+      <td className="px-2 whitespace-nowrap">{row.info}</td>
+    </tr>
+  );
+});
+
+const PCAP_VIEWPORT_H = 380;
+const PCAP_OVERSCAN = 24;
+
 function PacketsTab(props: {
   rows: PcapPacketRow[];
   matched: number;
@@ -701,34 +736,73 @@ function PacketsTab(props: {
   onFilter: (f: string) => void;
   onFollow: (id: number) => void;
 }) {
-  const { rows, selected, detail, selectedRow } = props;
+  const { rows, selected, detail, selectedRow, onSelect } = props;
+  const [scrollTop, setScrollTop] = useState(0);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (rows.length <= PAGE) {
+      setScrollTop(props.scrollRef.current?.scrollTop ?? 0);
+    }
+  }, [rows.length, props.scrollRef]);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  const handleContainerScroll = () => {
+    props.onScroll();
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const el = props.scrollRef.current;
+      if (el) setScrollTop(el.scrollTop);
+    });
+  };
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
     const idx = rows.findIndex((r) => r.no === selected);
-    const next = rows[Math.min(rows.length - 1, Math.max(0, idx + (e.key === 'ArrowDown' ? 1 : -1)))];
+    const nextIdx = Math.min(rows.length - 1, Math.max(0, idx + (e.key === 'ArrowDown' ? 1 : -1)));
+    const next = rows[nextIdx];
     if (next) {
-      props.onSelect(next.no);
+      onSelect(next.no);
       const el = props.scrollRef.current;
       if (el) {
-        const top = rows.indexOf(next) * ROW_H;
-        if (top < el.scrollTop + ROW_H) el.scrollTop = top - ROW_H;
-        else if (top > el.scrollTop + el.clientHeight - ROW_H * 2) el.scrollTop = top - el.clientHeight + ROW_H * 2;
+        const top = nextIdx * ROW_H;
+        if (top < el.scrollTop + ROW_H) el.scrollTop = Math.max(0, top - ROW_H);
+        else if (top > el.scrollTop + el.clientHeight - ROW_H * 2) {
+          el.scrollTop = top - el.clientHeight + ROW_H * 2;
+        }
+        setScrollTop(el.scrollTop);
       }
     }
   };
+
+  const virtualize = rows.length > 80;
+  const startIdx = virtualize
+    ? Math.max(0, Math.floor(scrollTop / ROW_H) - PCAP_OVERSCAN)
+    : 0;
+  const endIdx = virtualize
+    ? Math.min(rows.length, Math.ceil((scrollTop + PCAP_VIEWPORT_H) / ROW_H) + PCAP_OVERSCAN)
+    : rows.length;
+  const topSpacerH = startIdx * ROW_H;
+  const bottomSpacerH = Math.max(0, (rows.length - endIdx) * ROW_H);
+  const visibleRows = virtualize ? rows.slice(startIdx, endIdx) : rows;
 
   return (
     <div className="space-y-3">
       <div className="bg-white border border-[var(--fw-border)] rounded-lg overflow-hidden">
         <div
           ref={props.scrollRef}
-          onScroll={props.onScroll}
+          onScroll={handleContainerScroll}
           onKeyDown={onKey}
           tabIndex={0}
           className="overflow-auto outline-none"
-          style={{ height: 380 }}
+          style={{ height: PCAP_VIEWPORT_H }}
         >
           <table className="w-full text-xs font-mono border-collapse">
             <thead className="sticky top-0 z-10 bg-[var(--fw-bg)] text-[var(--fw-text-muted)]">
@@ -741,26 +815,24 @@ function PacketsTab(props: {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr
-                  key={r.no}
-                  onClick={() => props.onSelect(r.no)}
-                  className="cursor-pointer"
-                  style={{
-                    height: ROW_H,
-                    background: r.no === selected ? 'var(--fw-accent)' : rowBackground(r),
-                    color: r.no === selected ? '#fff' : undefined,
-                  }}
-                >
-                  <td className="px-2 tabular-nums whitespace-nowrap">{r.no}</td>
-                  <td className="px-2 tabular-nums whitespace-nowrap">{fmtTime(r.t)}</td>
-                  <td className="px-2 whitespace-nowrap">{r.src}</td>
-                  <td className="px-2 whitespace-nowrap">{r.dst}</td>
-                  <td className="px-2 whitespace-nowrap">{r.proto}</td>
-                  <td className="px-2 tabular-nums whitespace-nowrap">{r.len}</td>
-                  <td className="px-2 whitespace-nowrap">{r.info}</td>
+              {topSpacerH > 0 && (
+                <tr aria-hidden="true" style={{ height: topSpacerH }}>
+                  <td colSpan={7} className="p-0 border-0" />
                 </tr>
+              )}
+              {visibleRows.map((r) => (
+                <PacketRowItem
+                  key={r.no}
+                  row={r}
+                  isSelected={r.no === selected}
+                  onSelect={onSelect}
+                />
               ))}
+              {bottomSpacerH > 0 && (
+                <tr aria-hidden="true" style={{ height: bottomSpacerH }}>
+                  <td colSpan={7} className="p-0 border-0" />
+                </tr>
+              )}
               {!rows.length && !props.loading && (
                 <tr>
                   <td colSpan={7} className="px-3 py-10 text-center text-[var(--fw-text-muted)] font-sans">

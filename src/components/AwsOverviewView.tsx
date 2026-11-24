@@ -4,7 +4,7 @@ import type { AccessReportData } from '../../shared/accessReport.ts';
 import type { AwsSiteConfigPublic } from '../../shared/aws.ts';
 import { formatBytes } from '../../shared/destinations.ts';
 import type { ActiveSection, AuditOverview, FirewallVendor } from '../types.ts';
-import { countryName, flagEmoji } from '../utils/worldGeo.ts';
+import { countryName, flagEmoji } from '../utils/countryNames.ts';
 import { vendorApiUrl } from '../utils/vendorApi.ts';
 import { AWS_PERIODS as RANGES, Stat, TimelineChart, nf } from './awsParts.tsx';
 import type { CategorySummary } from '../../server/facets.ts';
