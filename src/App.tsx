@@ -257,7 +257,7 @@ function AppShell() {
       setActiveSection('overview');
     }
     // O ambiente AWS não tem regras/NATs/IA: volta para a visão geral se estava numa dessas telas
-    if (nextVendor === 'aws' && (activeSection === 'rules' || activeSection === 'nats' || activeSection === 'ai' || activeSection === 'syslogs')) {
+    if (nextVendor === 'aws' && (activeSection === 'rules' || activeSection === 'nats' || activeSection === 'syslogs')) {
       setActiveSection('overview');
     }
     setActiveVendor(nextVendor);

@@ -87,14 +87,22 @@ export function AiAnalystView({
 
   const threadEndRef = useRef<HTMLDivElement | null>(null);
 
-  const quickPrompts = [
+  const quickPrompts =
+    vendor === 'aws'
+      ? [
+          'Explique em linguagem simples os principais erros 5xx e requisições lentas do ALB e o que verificar nos targets.',
+          'Quais regras do WAF mais bloquearam e há sinais de falso positivo ou de ataque real?',
+          'Há varreduras de porta ou tentativas de acesso rejeitadas pelos Security Groups nos VPC Flow Logs?',
+          'Gere um resumo executivo curto em linguagem não técnica sobre a saúde e a segurança desta conta AWS.',
+        ]
+      : [
     `Explique em linguagem simples os principais bloqueios e alertas críticos dos logs ${theme.label}.`,
     vendor === 'fortigate'
       ? 'Quais políticas FortiOS, VIPs e IP Pools sem uso devo desabilitar primeiro e por quê?'
       : 'Quais regras de firewall e políticas NAT sem uso devo desabilitar primeiro e por quê?',
     'Há sinais de ataque, varredura de portas (scan) ou força bruta nos syslogs atuais?',
     'Gere um resumo executivo curto em linguagem não técnica para apresentar à diretoria.',
-  ];
+        ];
 
   useEffect(() => {
     setMessages([]);
@@ -434,7 +442,7 @@ export function AiAnalystView({
               Provedor de IA e Chave de API
             </h3>
             <p className="text-[11px] text-[var(--fw-text-muted)]">
-              Compartilhado entre SonicWall e FortiGate no servidor Linux
+              Compartilhada entre SonicWall, FortiGate e AWS (a mesma chave vale para os três ambientes)
             </p>
           </div>
         </div>

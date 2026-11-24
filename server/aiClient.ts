@@ -142,18 +142,101 @@ function buildLogContextSnapshot(
   ].join('\n');
 }
 
-function buildSystemInstruction(contextSnapshot: string): string {
+
+const metaStr = (v: unknown): string => (v === undefined || v === null ? '' : String(v));
+
+/** Contexto da conta AWS: o que o ALB, o WAF e os VPC Flow Logs mostram, sem nada de firewall de borda. */
+export function buildAwsContextSnapshot(overview: AuditOverview, syslogs: SyslogEvent[]): string {
+  const alb = syslogs.filter((e) => e.categoryName === 'Application Load Balancer' && e.meta?.method !== undefined);
+  const conn = syslogs.filter((e) => e.categoryName === 'Application Load Balancer' && e.meta?.connection === true);
+  const waf = syslogs.filter((e) => e.categoryName === 'AWS WAF');
+  const flow = syslogs.filter((e) => e.categoryName === 'VPC Flow Logs');
+
+  const top = <T,>(items: T[], key: (t: T) => string, n = 6): string =>
+    [...items.reduce((m, it) => m.set(key(it), (m.get(key(it)) ?? 0) + 1), new Map<string, number>()).entries()]
+      .filter(([k]) => k)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([k, c]) => `${k} (${c})`)
+      .join('; ') || 'nenhum';
+
+  const status = (e: SyslogEvent) => metaStr(e.meta?.status);
+  const errs = alb.filter((e) => status(e).startsWith('5'));
+  const times = alb.map((e) => Number(e.meta?.totalTime) || 0).filter((t) => t > 0).sort((a, b) => a - b);
+  const p95 = times.length ? times[Math.min(times.length - 1, Math.floor(times.length * 0.95))] : 0;
+  const rejected = flow.filter((e) => e.action === 'deny' || e.action === 'drop' || e.action === 'reset');
+  const blockedWaf = waf.filter((e) => e.action === 'deny');
+
+  const sample = [
+    ...errs.slice(0, 10),
+    ...blockedWaf.slice(0, 10),
+    ...rejected.slice(0, 8),
+    ...alb.filter((e) => Number(e.meta?.totalTime) >= 2).slice(0, 6),
+    ...conn.filter((e) => e.action === 'deny').slice(0, 4),
+    ...alb.slice(0, 5),
+  ].map(
+    (e) =>
+      `[${e.timestamp}] ${e.categoryName} acao=${e.action} ${e.srcIp}${e.srcPort ? `:${e.srcPort}` : ''} -> ${e.dstIp}${e.dstPort ? `:${e.dstPort}` : ''} msg="${e.message}"`
+  );
+
   return [
-    `Você é um Engenheiro Sênior de Segurança de Redes especialista em firewalls SonicWall (SonicOS 6.5 / 7) e Fortinet FortiGate (FortiOS 7.x), análise de syslogs, políticas NAT/VIP e ambientes Linux.`,
-    `Seu objetivo é traduzir os logs técnicos, drops, alertas de IPS/AV, regras sem uso e NATs/VIPs em explicações claras, humanas, objetivas e acionáveis em português brasileiro.`,
-    `Diretrizes obrigatórias:`,
-    `1. Baseie-se exclusivamente nos dados reais fornecidos no contexto abaixo e nas mensagens do usuário. Nunca invente IPs, portas ou regras que não apareçam nos dados.`,
-    `2. Se não houver logs ou regras carregados, informe claramente e oriente o usuário a carregar o dataset de amostra ou sincronizar/conectar o firewall.`,
-    `3. Ao explicar um evento ou risco, destaque: (a) o que aconteceu em linguagem simples, (b) se é tráfego normal ou ameaça/erro real, (c) qual ação prática tomar (ex.: desabilitar política antes de excluir, bloquear IP, revisar VIP/NAT órfão).`,
-    `4. Seja direto, organizado com listas curtas e cite os identificadores exatos (IPs, portas, IDs de regra/NAT) quando presentes.`,
-    ``,
-    contextSnapshot,
+    '=== CONTEXTO ATUAL DA CONTA AWS ===',
+    `Conta: ${/^\d{12}$/.test(overview.appliance.serialNumber) ? overview.appliance.serialNumber : 'não identificada'} | Região: ${overview.appliance.host && overview.appliance.host !== '-' ? overview.appliance.host : 'não informada'}`,
+    `Eventos analisados: ${syslogs.length} (ALB: ${alb.length} requisições + ${conn.length} conexões TLS; WAF: ${waf.length}; VPC Flow Logs: ${flow.length})`,
+    '',
+    'Application Load Balancer (access logs):',
+    `- Erros 5xx: ${errs.length} | latência total p95: ${p95 ? `${p95.toFixed(2)} s` : 'sem dados'}`,
+    `- Status mais comuns: ${top(alb, status)}`,
+    `- Endpoints com erro 5xx: ${top(errs, (e) => `${metaStr(e.meta?.method)} ${metaStr(e.meta?.host)}${metaStr(e.meta?.pathGroup) || metaStr(e.meta?.path)}`)}`,
+    `- Targets com erro: ${top(errs, (e) => metaStr(e.meta?.targetIp))}`,
+    `- Clientes: ${top(alb, (e) => metaStr(e.meta?.uaFamily))}`,
+    '',
+    'AWS WAF:',
+    `- Bloqueios: ${blockedWaf.length} de ${waf.length} requisições`,
+    `- Regras que mais bloquearam: ${top(blockedWaf, (e) => e.ruleRef ?? '')}`,
+    `- Origens bloqueadas: ${top(blockedWaf, (e) => e.srcIp)}`,
+    `- Credenciais expostas detectadas (tipo): ${top(waf, (e) => metaStr(e.meta?.secretTop))}`,
+    '',
+    'VPC Flow Logs:',
+    `- Fluxos rejeitados (Security Group/NACL): ${rejected.length} de ${flow.length}`,
+    `- Portas mais rejeitadas: ${top(rejected, (e) => (e.dstPort ? String(e.dstPort) : ''))}`,
+    `- Origens rejeitadas: ${top(rejected, (e) => e.srcIp)}`,
+    '',
+    'Alertas ativos: ' + (overview.alerts.length ? overview.alerts.slice(0, 6).map((a) => a.title).join(' | ') : 'nenhum'),
+    '',
+    'Amostra de eventos (erros, bloqueios, rejeições e requisições lentas primeiro):',
+    sample.length > 0 ? sample.join('\n') : '(Nenhum evento carregado ainda)',
   ].join('\n');
+}
+
+export function buildSystemInstruction(vendor: string, contextSnapshot: string): string {
+  const persona =
+    vendor === 'aws'
+      ? [
+          `Você é um Engenheiro Sênior de Nuvem e Segurança especialista em AWS: Application Load Balancer (access logs e connection logs), AWS WAF (Web ACLs, regras gerenciadas, rate-based), VPC Flow Logs (Security Groups e NACLs), CloudWatch Logs, IAM e TLS.`,
+          `Você analisa logs de uma CONTA AWS. Isto NÃO é um firewall SonicWall nem FortiGate: nunca use termos, comandos ou conceitos de SonicOS/FortiOS (zonas, regras de acesso do appliance, NAT de borda etc.).`,
+          `Seu objetivo é traduzir esses logs em explicações claras, humanas e acionáveis em português brasileiro, indicando o que verificar ou alterar na AWS (console, CLI ou configuração do recurso).`,
+          `Diretrizes obrigatórias:`,
+          `1. Baseie-se exclusivamente nos dados do contexto e nas mensagens do usuário. Nunca invente IPs, hosts, regras ou IDs que não apareçam nos dados.`,
+          `2. Se não houver eventos carregados, diga isso e oriente a configurar ou sincronizar uma fonte em Contas & Fontes.`,
+          `3. Para ALB: explique status (502/503/504 = target indisponível, lento ou conexão fechada), tempos (request_processing = envio pelo cliente, target_processing = aplicação, response_processing = resposta), TLS e ações do WAF. Diferencie lentidão do cliente de lentidão do servidor.`,
+          `4. Para WAF: explique a regra (Rule ID, grupo gerenciado), se é falso positivo provável ou ataque real, e sugira ajuste (exclusão de regra, modo COUNT, rate limit, lista de IPs).`,
+          `5. Para VPC Flow Logs: REJECT significa bloqueio por Security Group ou NACL; explique a porta e a origem e indique o que revisar.`,
+          `6. Credenciais (Authorization, cookies, tokens) nunca devem ser repetidas; se aparecerem, oriente a redigir os campos no logging do WAF.`,
+          `7. Seja direto, organizado em listas curtas e cite identificadores exatos (IPs, portas, hosts, endpoints, Rule IDs) quando presentes.`,
+        ]
+      : [
+          vendor === 'fortigate'
+            ? `Você é um Engenheiro Sênior de Segurança de Redes especialista em Fortinet FortiGate (FortiOS 7.x), análise de logs, políticas, VIPs/IP Pools e ambientes Linux. O ambiente analisado é um FortiGate: não use conceitos de SonicWall.`
+            : `Você é um Engenheiro Sênior de Segurança de Redes especialista em SonicWall (SonicOS 6.5 / 7), análise de syslogs, regras de acesso, políticas NAT e ambientes Linux. O ambiente analisado é um SonicWall: não use conceitos de FortiGate.`,
+          `Seu objetivo é traduzir os logs técnicos, drops, alertas de IPS/AV, regras sem uso e NATs/VIPs em explicações claras, humanas, objetivas e acionáveis em português brasileiro.`,
+          `Diretrizes obrigatórias:`,
+          `1. Baseie-se exclusivamente nos dados reais fornecidos no contexto abaixo e nas mensagens do usuário. Nunca invente IPs, portas ou regras que não apareçam nos dados.`,
+          `2. Se não houver logs ou regras carregados, informe claramente e oriente o usuário a carregar o dataset de amostra ou sincronizar/conectar o firewall.`,
+          `3. Ao explicar um evento ou risco, destaque: (a) o que aconteceu em linguagem simples, (b) se é tráfego normal ou ameaça/erro real, (c) qual ação prática tomar (ex.: desabilitar política antes de excluir, bloquear IP, revisar VIP/NAT órfão).`,
+          `4. Seja direto, organizado com listas curtas e cite os identificadores exatos (IPs, portas, IDs de regra/NAT) quando presentes.`,
+        ];
+  return [...persona, ``, contextSnapshot].join('\n');
 }
 
 async function callGeminiProvider(
@@ -327,17 +410,16 @@ export async function runAiLogAnalysis(params: {
   history: AiChatMessage[];
   message: string;
 }): Promise<{ reply: string; modelUsed: string; provider: AiProviderType }> {
-  const contextSnapshot = buildLogContextSnapshot(
-    params.overview,
-    params.syslogs,
-    params.rules,
-    params.nats
-  );
+  const vendor = params.overview.vendor;
+  const contextSnapshot =
+    vendor === 'aws'
+      ? buildAwsContextSnapshot(params.overview, params.syslogs)
+      : buildLogContextSnapshot(params.overview, params.syslogs, params.rules, params.nats);
   const anonymizer = params.settings.anonymize !== false ? createAnonymizer() : null;
   const protect = (text: string) => (anonymizer ? anonymizer.mask(text) : text);
   const restore = (text: string) => (anonymizer ? anonymizer.unmask(text) : text);
 
-  const systemInstruction = protect(buildSystemInstruction(contextSnapshot));
+  const systemInstruction = protect(buildSystemInstruction(vendor, contextSnapshot));
   const history = params.history.map((m) => ({ ...m, content: protect(m.content) }));
   const message = protect(params.message);
 

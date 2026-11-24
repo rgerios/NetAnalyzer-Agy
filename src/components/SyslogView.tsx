@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import {
   Download,
   Ban,
@@ -124,6 +124,8 @@ export function SyslogView({
     device: 'all',
     minutes: '15',
   });
+  const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+  const [viewW, setViewW] = useState(0);
   const [httpForm, setHttpForm] = useState<HttpFields>(EMPTY_HTTP);
   const [httpApplied, setHttpApplied] = useState<HttpFields>(EMPTY_HTTP);
   const [devices, setDevices] = useState<Array<{ id: string; label: string }>>([]);
@@ -243,6 +245,24 @@ export function SyslogView({
   useEffect(() => {
     void fetchLogs(0, appliedFilters, httpApplied);
   }, [vendor, appliedFilters, httpApplied, refreshToken]);
+
+  useEffect(() => {
+    const el = scrollBoxRef.current;
+    if (!el) return;
+    const measure = () => setViewW(el.clientWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [events.length, loading]);
+
+  /** Pedido de análise com o contexto certo da plataforma (a IA recebe também o contexto do ambiente). */
+  const analysisPrompt = (ev: SyslogEvent): string => {
+    if (isAws) {
+      return `Explique este evento de log da AWS (${ev.categoryName}) em linguagem humana, avalie se há problema de desempenho, erro ou risco de segurança e indique o que verificar ou alterar na AWS:\n\n${ev.raw}`;
+    }
+    return `Explique este evento de syslog do ${theme.label} em linguagem humana, avalie se há risco e indique o que fazer:\n\n${ev.raw}`;
+  };
 
   const handleApplyFilters = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -964,9 +984,10 @@ export function SyslogView({
             )}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div ref={scrollBoxRef} className="overflow-auto max-h-[70vh]" tabIndex={0} aria-label="Lista de eventos (role para ver a mensagem completa)">
             <table className="w-full text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="border-b border-[var(--fw-border)] text-[var(--fw-text-muted)] bg-[var(--fw-bg)]">
                   <th className="py-2.5 pl-4 pr-2 text-left font-medium w-8" />
                   <th className="py-2.5 px-3 text-left font-medium">Data / Hora</th>
@@ -1050,13 +1071,28 @@ export function SyslogView({
                           {ev.ruleRef || '-'}
                           {ev.natRuleRef ? ` · ${ev.natRuleRef}` : ''}
                         </td>
-                        <td className="py-2.5 px-4 text-[var(--fw-text-body)] max-w-xs truncate">
+                        <td className="py-2.5 px-4 text-[var(--fw-text-body)] whitespace-nowrap">
                           {ev.message}
                         </td>
                       </tr>
                       {isOpen && (
                         <tr className="bg-[var(--fw-bg)]">
-                          <td colSpan={9} className="px-6 py-4 border-t border-[var(--fw-border)]">
+                          <td colSpan={9} className="p-0 border-t border-[var(--fw-border)]">
+                            <div className="sticky left-0 px-6 py-4" style={viewW ? { width: viewW } : undefined}>
+                            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                              <span className="text-xs font-semibold text-[var(--fw-heading)]">Detalhes do evento</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onAnalyzeEvent(analysisPrompt(ev));
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[var(--fw-accent)] rounded-md hover:bg-[var(--fw-accent-hover)]"
+                              >
+                                <Bot className="w-3.5 h-3.5" />
+                                Analisar este evento com IA
+                              </button>
+                            </div>
                             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs mb-3">
                               <div>
                                 <span className="text-[var(--fw-text-muted)]">Device:</span>{' '}
@@ -1103,23 +1139,9 @@ export function SyslogView({
                                 ))}
                               </dl>
                             )}
-                            <pre className="p-3 bg-[var(--fw-terminal-bg)] text-[var(--fw-terminal-text)] rounded-md font-mono text-[11px] overflow-x-auto whitespace-pre-wrap">
+                            <pre className="p-3 bg-[var(--fw-terminal-bg)] text-[var(--fw-terminal-text)] rounded-md font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all">
                               {ev.raw}
                             </pre>
-                            <div className="mt-3 flex justify-end">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onAnalyzeEvent(
-                                    `Explique este evento de syslog do ${theme.label} em linguagem humana, avalie se há risco e indique o que fazer:\n\n${ev.raw}`
-                                  );
-                                }}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[var(--fw-accent)] rounded-md hover:bg-[var(--fw-accent-hover)]"
-                              >
-                                <Bot className="w-3.5 h-3.5" />
-                                Analisar este evento com IA
-                              </button>
                             </div>
                           </td>
                         </tr>
@@ -1129,6 +1151,8 @@ export function SyslogView({
                 })}
               </tbody>
             </table>
+          </div>
+          <div>
             {events.length < matched && (
               <div className="px-4 py-3 border-t border-[var(--fw-border)] flex justify-center">
                 <button
@@ -1144,6 +1168,7 @@ export function SyslogView({
               </div>
             )}
           </div>
+          </>
         )}
       </div>
     </div>

@@ -54,7 +54,7 @@ Uma interface, três ambientes, alternados na barra lateral. Cada um roda no seu
 | **Origem dos logs** | Syslog UDP `5514` + API SonicOS | Syslog UDP `5515` + API FortiOS | VPC Flow Logs, WAF e ALB lidos do **S3** |
 | **Direção do tráfego** | Saída para a internet | Saída para a internet | Clientes de entrada e fluxos de saída |
 | **Auditoria de regras / NAT** | ✅ | ✅ (políticas, VIPs) | — |
-| **Todo o resto** | Syslogs, Destinos, Behavior, Portas, PCAP, Relatórios, Alertas | igual | igual (sem analista de IA) |
+| **Todo o resto** | Syslogs, Destinos, Behavior, Portas, PCAP, Relatórios, Alertas | igual | igual, inclusive o analista de IA com contexto próprio da AWS |
 
 ---
 

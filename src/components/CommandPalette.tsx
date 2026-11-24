@@ -121,7 +121,7 @@ export function CommandPalette(props: CommandPaletteProps) {
     ];
     if (vendor === 'aws') {
       for (let i = list.length - 1; i >= 0; i -= 1) {
-        if (['go-rules', 'go-nats', 'go-ai', 'go-syslogs'].includes(list[i].id)) list.splice(i, 1);
+        if (['go-rules', 'go-nats', 'go-syslogs'].includes(list[i].id)) list.splice(i, 1);
       }
       list.splice(1, 0,
         { id: 'go-alb', label: 'ALB', group: 'Ir para', icon: Activity, keywords: 'load balancer http latencia', run: () => props.onNavigate('alb') },

@@ -111,7 +111,7 @@ export function Sidebar({
   const visibleNavItems =
     vendor === 'aws'
       ? (() => {
-          const base = navItems.filter((i) => i.id !== 'rules' && i.id !== 'nats' && i.id !== 'ai' && i.id !== 'syslogs');
+          const base = navItems.filter((i) => i.id !== 'rules' && i.id !== 'nats' && i.id !== 'syslogs');
           const resources: typeof navItems = [
             { id: 'alb', label: 'ALB', icon: Network },
             { id: 'vpcflow', label: 'VPC Flow Logs', icon: Waves },
