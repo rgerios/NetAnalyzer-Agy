@@ -207,11 +207,52 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
     })
   );
 
+  const AWS_RESULT_CACHE_TTL_MS = 5 * 60_000;
+  const AWS_RESULT_CACHE_MAX = 128;
+  const awsResultCache = new Map<
+    string,
+    { syslogsRef: unknown; expiresAt: number; value: FacetReport | HttpInsights }
+  >();
+  const awsInFlight = new Map<string, Promise<FacetReport | HttpInsights>>();
+
+  function getCachedAwsResult<T extends FacetReport | HttpInsights>(
+    key: string,
+    site: FirewallSiteRecord,
+    compute: () => Promise<T>
+  ): Promise<T> {
+    const now = Date.now();
+    const hit = awsResultCache.get(key);
+    if (hit && hit.syslogsRef === site.syslogs && hit.expiresAt > now) {
+      return Promise.resolve(hit.value as T);
+    }
+    const pending = awsInFlight.get(key);
+    if (pending) return pending as Promise<T>;
+    const promise = compute()
+      .then((value) => {
+        if (awsResultCache.size >= AWS_RESULT_CACHE_MAX) {
+          const firstKey = awsResultCache.keys().next().value;
+          if (firstKey !== undefined) awsResultCache.delete(firstKey);
+        }
+        awsResultCache.set(key, {
+          syslogsRef: site.syslogs,
+          expiresAt: Date.now() + AWS_RESULT_CACHE_TTL_MS,
+          value,
+        });
+        return value;
+      })
+      .finally(() => {
+        awsInFlight.delete(key);
+      });
+    awsInFlight.set(key, promise);
+    return promise;
+  }
+
   async function computeFacets(
     site: FirewallSiteRecord,
     kind: AwsLogKind,
     minutes: number
   ): Promise<FacetReport> {
+    return getCachedAwsResult(`facets|${kind}|${site.id}|${minutes}`, site, async () => {
     const sinceIso =
       minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
     const memoryEvents = sinceIso
@@ -265,12 +306,14 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
       for (const it of f.items) it.country = intel.lookup(it.key).country;
     }
     return { kind, minutes, generatedAt: new Date().toISOString(), dataSource, ...result };
+    });
   }
 
   async function computeHttpInsights(
     site: FirewallSiteRecord,
     minutes: number
   ): Promise<HttpInsights> {
+    return getCachedAwsResult(`http|${site.id}|${minutes}`, site, async () => {
     const sinceIso =
       minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
     const memoryEvents = sinceIso
@@ -305,6 +348,7 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
       }
     }
     return buildHttpInsights({ ...rows, minutes, dataSource, truncated });
+    });
   }
 
   // Relatório de entrega em HTML (ALB, conexões TLS, VPC Flow Logs e WAF) com a identidade do cliente
