@@ -420,7 +420,7 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
       const sinceIso =
         minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
       const memoryEvents = sinceIso
-        ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
+        ? site.syslogs.filter((ev) => resolveEventTimeMs(ev) >= Date.parse(sinceIso))
         : site.syslogs;
       const oldestInMemory =
         site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
@@ -445,6 +445,7 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
           timeline = agg.timeline;
         }
       }
+      timeline = padTimeline(timeline, minutes, bucketSec, (t) => ({ t, allowed: 0, blocked: 0 }));
       res.json({ minutes, generatedAt: new Date().toISOString(), rows, timeline });
     })
   );

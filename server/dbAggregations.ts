@@ -489,44 +489,45 @@ export async function aggregateFacetsDb(
   try {
     await client.query('BEGIN READ ONLY');
     await client.query(`SET LOCAL statement_timeout = ${Math.floor(timeoutMs)}`);
-    const t = await client.query(
-      `SELECT count(*)::bigint AS c, count(*) FILTER (WHERE ${blocked})::bigint AS b, COALESCE(sum(${bytes}), 0)::bigint AS bytes,
-              COALESCE(sum(NULLIF(payload_json#>>'{meta,packets}', '')::numeric), 0)::bigint AS packets
-         FROM syslogs WHERE ${base}`,
+    // Uma única leitura do período: os campos são extraídos uma vez e todos os totais, a linha do
+    // tempo e os "top N" saem desse conjunto, em vez de reler a tabela a cada faceta.
+    const columns = specs.map((spec, i) => `${facetSql(spec.field)} AS f${i}`);
+    const tops = specs.map((spec, i) => {
+      const cond = spec.where === 'blocked' ? 'AND is_blocked' : spec.where === 'allowed' ? 'AND NOT is_blocked' : '';
+      const order = spec.metric === 'bytes' ? 'sum(b_total) DESC, count(*) DESC' : 'count(*) DESC';
+      return `(SELECT COALESCE(json_agg(x), '[]'::json) FROM (
+          SELECT f${i} AS v, count(*) AS c, count(*) FILTER (WHERE is_blocked) AS b, COALESCE(sum(b_total), 0)::bigint AS bytes
+            FROM base WHERE COALESCE(f${i}, '') NOT IN ('', '-') ${cond}
+           GROUP BY 1 ORDER BY ${order} LIMIT ${ITEM_LIMIT_FOR_DB}) x) AS i${i}`;
+    });
+    const r = await client.query(
+      `WITH base AS MATERIALIZED (
+         SELECT event_at, ${blocked} AS is_blocked, ${bytes} AS b_total,
+                NULLIF(payload_json#>>'{meta,packets}', '')::numeric AS packets${columns.map((c) => `, ${c}`).join('')}
+           FROM syslogs WHERE ${base}
+       )
+       SELECT
+         (SELECT row_to_json(x) FROM (
+            SELECT count(*) AS c, count(*) FILTER (WHERE is_blocked) AS b, COALESCE(sum(b_total), 0)::bigint AS bytes,
+                   COALESCE(sum(packets), 0)::bigint AS packets FROM base) x) AS totals,
+         (SELECT COALESCE(json_agg(x ORDER BY x.epoch), '[]'::json) FROM (
+            SELECT floor(extract(epoch FROM event_at) / ${bs}) * ${bs} AS epoch,
+                   count(*) FILTER (WHERE NOT is_blocked) AS allowed, count(*) FILTER (WHERE is_blocked) AS blocked
+              FROM base GROUP BY 1) x) AS timeline${tops.map((t) => `,\n         ${t}`).join('')}`,
       params
     );
-    const tl = await client.query(
-      `SELECT to_timestamp(floor(extract(epoch FROM event_at) / ${bs}) * ${bs}) AS t,
-              count(*) FILTER (WHERE NOT (${blocked}))::bigint AS allowed,
-              count(*) FILTER (WHERE ${blocked})::bigint AS blocked
-         FROM syslogs WHERE ${base} GROUP BY 1 ORDER BY 1`,
-      params
-    );
+    const result = r.rows[0];
     const items: Record<string, Array<{ key: string; count: number; blocked: number; bytes: number }>> = {};
-    for (const spec of specs) {
-      const expr = facetSql(spec.field);
-      const cond =
-        spec.where === 'blocked'
-          ? `AND ${blocked}`
-          : spec.where === 'allowed'
-            ? `AND NOT (${blocked})`
-            : '';
-      const order = spec.metric === 'bytes' ? `sum(${bytes}) DESC, count(*) DESC` : 'count(*) DESC';
-      const r = await client.query(
-        `SELECT ${expr} AS v, count(*)::bigint AS c, count(*) FILTER (WHERE ${blocked})::bigint AS b, COALESCE(sum(${bytes}), 0)::bigint AS bytes
-           FROM syslogs WHERE ${base} ${cond} AND COALESCE(${expr}, '') NOT IN ('', '-')
-          GROUP BY 1 ORDER BY ${order} LIMIT ${ITEM_LIMIT_FOR_DB}`,
-        params
-      );
-      items[spec.id] = r.rows.map((x) => ({
+    specs.forEach((spec, i) => {
+      items[spec.id] = (result[`i${i}`] as Array<{ v: unknown; c: number; b: number; bytes: number }>).map((x) => ({
         key: String(x.v),
         count: Number(x.c),
         blocked: Number(x.b),
         bytes: Number(x.bytes),
       }));
-    }
+    });
     await client.query('COMMIT');
-    const row = t.rows[0] ?? {};
+    const row = result.totals as { c: number; b: number; bytes: number; packets: number };
     const events = Number(row.c ?? 0);
     const blockedN = Number(row.b ?? 0);
     return {
@@ -537,8 +538,8 @@ export async function aggregateFacetsDb(
         bytes: Number(row.bytes ?? 0),
         packets: Number(row.packets ?? 0),
       },
-      timeline: tl.rows.map((x) => ({
-        t: new Date(x.t).toISOString(),
+      timeline: (result.timeline as Array<{ epoch: number; allowed: number; blocked: number }>).map((x) => ({
+        t: new Date(Number(x.epoch) * 1000).toISOString(),
         allowed: Number(x.allowed),
         blocked: Number(x.blocked),
       })),
@@ -584,37 +585,38 @@ export async function aggregateCategorySummaryDb(
   try {
     await client.query('BEGIN READ ONLY');
     await client.query(`SET LOCAL statement_timeout = ${Math.floor(timeoutMs)}`);
-    const r = await client.query(
-      `SELECT payload_json->>'categoryName' AS cat, count(*)::bigint AS c,
-              count(*) FILTER (WHERE action IN ('drop','deny','reset'))::bigint AS b,
-              count(*) FILTER (WHERE COALESCE(payload_json#>>'{meta,status}', '') ~ '^5')::bigint AS e5,
-              COALESCE(sum(COALESCE(NULLIF(payload_json->>'bytesSent', '')::numeric, 0) + COALESCE(NULLIF(payload_json->>'bytesRcvd', '')::numeric, 0)), 0)::bigint AS bytes,
-              max(event_at) AS last
-         FROM syslogs
-        WHERE site_id = $1 AND event_at >= $2 AND action <> 'system'
-          AND payload_json->>'categoryName' IN ('Application Load Balancer', 'VPC Flow Logs', 'AWS WAF')
-        GROUP BY 1`,
-      [siteId, sinceIso]
-    );
     const bs = Math.max(1, Math.floor(bucketSec));
-    const tl = await client.query(
-      `SELECT to_timestamp(floor(extract(epoch FROM event_at) / ${bs}) * ${bs}) AS t,
-              count(*) FILTER (WHERE action NOT IN ('drop','deny','reset'))::bigint AS allowed,
-              count(*) FILTER (WHERE action IN ('drop','deny','reset'))::bigint AS blocked
-         FROM syslogs
-        WHERE site_id = $1 AND event_at >= $2 AND action <> 'system'
-          AND payload_json->>'categoryName' IN ('Application Load Balancer', 'VPC Flow Logs', 'AWS WAF')
-        GROUP BY 1 ORDER BY 1`,
+    // Cartões e linha do tempo saem da mesma leitura do período
+    const q = await client.query(
+      `WITH base AS MATERIALIZED (
+         SELECT payload_json->>'categoryName' AS cat, event_at, action IN ('drop','deny','reset') AS is_blocked,
+                COALESCE(payload_json#>>'{meta,status}', '') ~ '^5' AS is_5xx,
+                COALESCE(NULLIF(payload_json->>'bytesSent', '')::numeric, 0) + COALESCE(NULLIF(payload_json->>'bytesRcvd', '')::numeric, 0) AS b_total
+           FROM syslogs
+          WHERE site_id = $1 AND event_at >= $2 AND action <> 'system'
+            AND payload_json->>'categoryName' IN ('Application Load Balancer', 'VPC Flow Logs', 'AWS WAF')
+       )
+       SELECT
+         (SELECT COALESCE(json_agg(x), '[]'::json) FROM (
+            SELECT cat, count(*) AS c, count(*) FILTER (WHERE is_blocked) AS b, count(*) FILTER (WHERE is_5xx) AS e5,
+                   COALESCE(sum(b_total), 0)::bigint AS bytes, max(event_at) AS last
+              FROM base GROUP BY 1) x) AS categories,
+         (SELECT COALESCE(json_agg(x ORDER BY x.epoch), '[]'::json) FROM (
+            SELECT floor(extract(epoch FROM event_at) / ${bs}) * ${bs} AS epoch,
+                   count(*) FILTER (WHERE NOT is_blocked) AS allowed, count(*) FILTER (WHERE is_blocked) AS blocked
+              FROM base GROUP BY 1) x) AS timeline`,
       [siteId, sinceIso]
     );
+    const categories = q.rows[0].categories as Array<{ cat: string; c: number; b: number; e5: number; bytes: number; last: string | null }>;
+    const buckets = q.rows[0].timeline as Array<{ epoch: number; allowed: number; blocked: number }>;
     await client.query('COMMIT');
     return {
-      timeline: tl.rows.map((x) => ({
-        t: new Date(x.t).toISOString(),
+      timeline: buckets.map((x) => ({
+        t: new Date(Number(x.epoch) * 1000).toISOString(),
         allowed: Number(x.allowed),
         blocked: Number(x.blocked),
       })),
-      rows: r.rows.map((x) => ({
+      rows: categories.map((x) => ({
         category: String(x.cat),
         events: Number(x.c),
         blocked: Number(x.b),
