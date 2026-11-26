@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import { Loader2, Network, ShieldCheck, Waves } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2, Network, ShieldCheck, Tv, Waves } from 'lucide-react';
 import type { FacetReport } from '../../shared/awsFacets.ts';
 import type { HttpInsights } from '../../shared/httpInsights.ts';
 import { formatBytes } from '../../shared/destinations.ts';
 import type { FirewallVendor } from '../types.ts';
 import { vendorApiUrl } from '../utils/vendorApi.ts';
 import { FacetsGrid, HttpInsightsSection, PageHeader, PeriodSelector, Stat, TimelineChart, HttpPanel, nf } from './awsParts.tsx';
+import { AlbTvMode } from './AlbTvMode.tsx';
 import { SyslogView } from './SyslogView.tsx';
 import { RISK_STYLE, SECRET_INFO } from '../../shared/awsSecrets.ts';
 
@@ -142,6 +143,8 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
   const [conn, setConn] = useState<FacetReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [autoTick, setAutoTick] = useState(0);
+  const [tv, setTv] = useState(false);
+  const closeTv = useCallback(() => setTv(false), []);
   const lastTick = useRef(0);
 
   // O período é relativo a "agora": atualiza o painel a cada minuto enquanto a aba está visível
@@ -193,7 +196,26 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
         icon={meta.icon}
         title={meta.title}
         subtitle={meta.subtitle}
-        right={tab === 'panel' ? <PeriodSelector minutes={minutes} onChange={setMinutes} /> : undefined}
+        right={
+          tab === 'panel' ? (
+            <div className="flex items-center gap-2">
+              <PeriodSelector minutes={minutes} onChange={setMinutes} />
+              {resource === 'alb' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTv(true);
+                    // a tela cheia só é permitida direto no clique
+                    void document.documentElement.requestFullscreen?.()?.catch(() => undefined);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border border-[var(--fw-border-strong)] rounded-md text-[var(--fw-text-body)] hover:text-[var(--fw-heading)]"
+                >
+                  <Tv className="w-3.5 h-3.5" aria-hidden="true" /> Modo TV
+                </button>
+              )}
+            </div>
+          ) : undefined
+        }
       />
       <div role="tablist" className="inline-flex p-1 bg-[var(--fw-surface-alt)] rounded-md">
         {(['panel', 'events'] as const).map((t) => (
@@ -208,6 +230,8 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
           </button>
         ))}
       </div>
+
+      {tv && resource === 'alb' && <AlbTvMode ins={http} error={error} minutes={minutes} onMinutes={setMinutes} onClose={closeTv} />}
 
       {tab === 'events' && (
         <SyslogView

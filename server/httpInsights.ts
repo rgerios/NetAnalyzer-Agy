@@ -53,7 +53,8 @@ export interface HttpClientGroup {
 
 export interface HttpExtras {
   slowRequests: HttpSlowRequest[];
-  timeline: Array<{ t: string; requests: number; errors5xx: number; sumTgt: number; maxTime: number }>;
+  /** `hist`: histograma do tempo total no intervalo, para o p95. */
+  timeline: Array<{ t: string; requests: number; errors5xx: number; sumTgt: number; maxTime: number; hist: number[] }>;
   tlsReused: number;
 }
 
@@ -142,7 +143,8 @@ export function rowsFromAlbEvents(
     const ms0 = resolveEventTimeMs(ev);
     if (Number.isFinite(ms0)) {
       const t = new Date(Math.floor(ms0 / (bucketSec * 1000)) * bucketSec * 1000).toISOString();
-      const b = tl.get(t) ?? { t, requests: 0, errors5xx: 0, sumTgt: 0, maxTime: 0 };
+      const b = tl.get(t) ?? { t, requests: 0, errors5xx: 0, sumTgt: 0, maxTime: 0, hist: emptyHist() };
+      b.hist[histBucketOf(total)] += 1;
       b.requests += 1;
       if (num(status) >= 500) b.errors5xx += 1;
       b.sumTgt += tgtT;
@@ -323,7 +325,7 @@ export function buildHttpInsights(params: {
     distribution: HIST_LABELS.map((label, i) => ({ label, requests: hist[i] })),
     slowRequests: extras.slowRequests,
     timeline: extras.timeline.map((b) => ({
-      t: b.t, requests: b.requests, errors5xx: b.errors5xx, avgTargetMs: b.requests > 0 ? ms(b.sumTgt / b.requests) : 0, maxMs: ms(b.maxTime),
+      t: b.t, requests: b.requests, errors5xx: b.errors5xx, avgTargetMs: b.requests > 0 ? ms(b.sumTgt / b.requests) : 0, p95Ms: ms(percentileFromHist(b.hist, 0.95, b.maxTime)), maxMs: ms(b.maxTime),
     })),
     tlsReuse: { reused: extras.tlsReused, total: tlsTotal },
     waf,

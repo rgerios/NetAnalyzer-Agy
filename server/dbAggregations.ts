@@ -321,7 +321,7 @@ export async function aggregateHttpInsightsDb(
       targetIp: string;
       traceId: string;
     }>;
-    timeline: Array<{ t: string; requests: number; errors5xx: number; sumTgt: number; maxTime: number }>;
+    timeline: Array<{ t: string; requests: number; errors5xx: number; sumTgt: number; maxTime: number; hist: number[] }>;
     tlsReused: number;
   };
   capped: boolean;
@@ -375,7 +375,7 @@ export async function aggregateHttpInsightsDb(
     const tl = await client.query(
       `SELECT to_timestamp(floor(extract(epoch FROM event_at) / ${bs}) * ${bs}) AS t, count(*)::bigint AS c,
               count(*) FILTER (WHERE ${m('status')} ~ '^5')::bigint AS e5, sum(${sec('targetTime')}) AS stgt, max(${total}) AS mx,
-              count(*) FILTER (WHERE ${m('tlsReused')} = 'true')::bigint AS reused
+              count(*) FILTER (WHERE ${m('tlsReused')} = 'true')::bigint AS reused, ${histCols(total, 'h')}
          FROM syslogs WHERE ${where} GROUP BY 1 ORDER BY 1`,
       [siteId, sinceIso]
     );
@@ -436,6 +436,7 @@ export async function aggregateHttpInsightsDb(
           errors5xx: Number(r.e5),
           sumTgt: Number(r.stgt ?? 0),
           maxTime: Number(r.mx ?? 0),
+          hist: readHist(r, 'h'),
         })),
         tlsReused: tl.rows.reduce((n, r) => n + Number(r.reused ?? 0), 0),
       },

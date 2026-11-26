@@ -67,7 +67,7 @@ export interface HttpInsights {
   /** As requisições individuais mais lentas, com o Trace ID para investigar. */
   slowRequests: HttpSlowRequest[];
   /** Volume, erros 5xx e latência por intervalo. */
-  timeline: Array<{ t: string; requests: number; errors5xx: number; avgTargetMs: number; maxMs: number }>;
+  timeline: Array<{ t: string; requests: number; errors5xx: number; avgTargetMs: number; p95Ms: number; maxMs: number }>;
   tlsReuse: { reused: number; total: number };
   waf: { evaluated: number; forwarded: number; blocked: number };
   bytes: { in: number; out: number };

@@ -353,7 +353,7 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
     }
     const insights = buildHttpInsights({ ...rows, minutes, dataSource, truncated });
     insights.timeline = padTimeline(insights.timeline, minutes, bucketSec, (t) => ({
-      t, requests: 0, errors5xx: 0, avgTargetMs: 0, maxMs: 0,
+      t, requests: 0, errors5xx: 0, avgTargetMs: 0, p95Ms: 0, maxMs: 0,
     }));
     return insights;
     });
