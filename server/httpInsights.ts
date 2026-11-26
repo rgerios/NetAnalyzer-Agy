@@ -2,6 +2,7 @@
  * Análise de aplicação dos access logs do ALB: status, latência, endpoints, navegadores, TLS, WAF e
  * targets. O banco devolve linhas já agregadas; sem banco, `rowsFromAlbEvents` faz o mesmo em memória.
  */
+import { resolveEventTimeMs } from './engineHelpers.ts';
 import type { HttpEndpointRow, HttpInsights, HttpSlowRequest, HttpTargetRow } from '../shared/httpInsights.ts';
 import type { SyslogEvent } from './types.ts';
 
@@ -138,7 +139,7 @@ export function rowsFromAlbEvents(
     c.c += 1;
     if (num(status) >= 500) c.errors += 1;
 
-    const ms0 = Date.parse(ev.ingestedAt || ev.timestamp || '');
+    const ms0 = resolveEventTimeMs(ev);
     if (Number.isFinite(ms0)) {
       const t = new Date(Math.floor(ms0 / (bucketSec * 1000)) * bucketSec * 1000).toISOString();
       const b = tl.get(t) ?? { t, requests: 0, errors5xx: 0, sumTgt: 0, maxTime: 0 };
@@ -149,7 +150,7 @@ export function rowsFromAlbEvents(
       tl.set(t, b);
     }
     slowList.push({
-      at: ev.ingestedAt || ev.timestamp, method: str(m.method), host: str(m.host), path: str(m.path),
+      at: new Date(ms0).toISOString(), method: str(m.method), host: str(m.host), path: str(m.path),
       client: ev.srcIp, status, totalMs: Math.round(total * 1000), requestMs: Math.round(reqT * 1000),
       targetMs: Math.round(tgtT * 1000), targetIp: str(m.targetIp), traceId: str(m.traceId), total,
     });

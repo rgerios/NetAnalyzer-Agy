@@ -13,6 +13,11 @@ export function aggTtl(minutes: number): number {
   return minutes > 0 && minutes <= 360 ? 15_000 : 45_000;
 }
 
+/** Idade máxima de um resultado servido do cache; acima disso a requisição espera o cálculo novo. */
+export function maxStaleMs(ttlMs: number): number {
+  return ttlMs <= 15_000 ? 60_000 : 10 * 60_000;
+}
+
 /**
  * Cache em memória com renovação em segundo plano (stale-while-revalidate) para agregações
  * pesadas no banco (Behavior, Radares e painéis AWS).
@@ -47,7 +52,7 @@ export function createAggregateCache(flushPendingInserts: () => Promise<void>) {
       return p;
     };
     const cached = aggCache.get(key);
-    if (cached) {
+    if (cached && Date.now() - cached.at <= maxStaleMs(ttlMs)) {
       if (Date.now() - cached.at > ttlMs) void refresh().catch(() => undefined);
       return cached.data as T;
     }

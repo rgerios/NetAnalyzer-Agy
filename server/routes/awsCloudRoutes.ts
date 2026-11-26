@@ -2,6 +2,7 @@ import type express from 'express';
 import type { AwsConfigSaveBody } from '../../shared/aws.ts';
 import type { HttpInsights } from '../../shared/httpInsights.ts';
 import { appLog } from '../appLogger.ts';
+import { resolveEventTimeMs } from '../engineHelpers.ts';
 import type { AuthManager } from '../authManager.ts';
 import {
   buildLogsClient,
@@ -22,6 +23,7 @@ import { buildS3Client, describeAwsError, testSource } from '../awsS3.ts';
 import type { PostgresStore } from '../database.ts';
 import {
   bucketSecondsFor,
+  padTimeline,
   FACETS,
   facetsFromEvents,
   KIND_CATEGORY,
@@ -207,7 +209,8 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
     })
   );
 
-  const AWS_RESULT_CACHE_TTL_MS = 5 * 60_000;
+  // Curto de propósito: a janela é relativa a "agora", então o resultado envelhece mesmo sem ingestão nova
+  const AWS_RESULT_CACHE_TTL_MS = 15_000;
   const AWS_RESULT_CACHE_MAX = 128;
   const awsResultCache = new Map<
     string,
@@ -256,7 +259,7 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
     const sinceIso =
       minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
     const memoryEvents = sinceIso
-      ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
+      ? site.syslogs.filter((ev) => resolveEventTimeMs(ev) >= Date.parse(sinceIso))
       : site.syslogs;
     const oldestInMemory =
       site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
@@ -305,7 +308,8 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
       if (!f.ip) continue;
       for (const it of f.items) it.country = intel.lookup(it.key).country;
     }
-    return { kind, minutes, generatedAt: new Date().toISOString(), dataSource, ...result };
+    const timeline = padTimeline(result.timeline, minutes, bucketSec, (t) => ({ t, allowed: 0, blocked: 0 }));
+    return { kind, minutes, generatedAt: new Date().toISOString(), dataSource, ...result, timeline };
     });
   }
 
@@ -317,7 +321,7 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
     const sinceIso =
       minutes > 0 ? new Date(Date.now() - minutes * 60 * 1000).toISOString() : undefined;
     const memoryEvents = sinceIso
-      ? site.syslogs.filter((ev) => !ev.ingestedAt || ev.ingestedAt >= sinceIso)
+      ? site.syslogs.filter((ev) => resolveEventTimeMs(ev) >= Date.parse(sinceIso))
       : site.syslogs;
     const oldestInMemory =
       site.syslogs.length > 0 ? site.syslogs[site.syslogs.length - 1]?.ingestedAt : null;
@@ -347,7 +351,11 @@ export function registerAwsCloudRoutes(opts: AwsCloudRoutesOptions): void {
         dataSource = 'database';
       }
     }
-    return buildHttpInsights({ ...rows, minutes, dataSource, truncated });
+    const insights = buildHttpInsights({ ...rows, minutes, dataSource, truncated });
+    insights.timeline = padTimeline(insights.timeline, minutes, bucketSec, (t) => ({
+      t, requests: 0, errors5xx: 0, avgTargetMs: 0, maxMs: 0,
+    }));
+    return insights;
     });
   }
 

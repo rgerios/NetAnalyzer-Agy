@@ -1,3 +1,4 @@
+import { resolveEventTimeMs } from './engineHelpers.ts';
 /**
  * Facetas por tipo de log da AWS (VPC Flow Logs e WAF): "top N" de cada campo importante, com contagem,
  * bloqueios e bytes. O banco agrega sobre o período inteiro; sem banco, a mesma regra roda em memória.
@@ -165,7 +166,7 @@ export function facetsFromEvents(events: SyslogEvent[], kind: AwsLogKind, bucket
     else totals.allowed += 1;
     totals.bytes += (e.bytesSent || 0) + (e.bytesRcvd || 0);
     totals.packets += Number(e.meta?.packets) || 0;
-    const ms = Date.parse(e.ingestedAt || e.timestamp || '');
+    const ms = resolveEventTimeMs(e);
     if (Number.isFinite(ms)) {
       const t = new Date(Math.floor(ms / (bucketSec * 1000)) * bucketSec * 1000).toISOString();
       const h = hours.get(t) ?? { t, allowed: 0, blocked: 0 };
@@ -199,12 +200,33 @@ export const ITEM_LIMIT_FOR_DB = ITEM_LIMIT;
 export const facetIsUsable = usable;
 
 /** Linha do tempo (permitidos x bloqueados) somando os três recursos AWS. */
+/**
+ * Preenche com zeros os intervalos sem eventos, para o eixo do gráfico cobrir exatamente o período
+ * escolhido (até "agora"). Sem período definido (minutes = 0) a série fica como veio.
+ */
+export function padTimeline<T extends { t: string }>(
+  points: T[],
+  minutes: number,
+  bucketSec: number,
+  empty: (t: string) => T,
+  nowMs = Date.now()
+): T[] {
+  if (minutes <= 0) return points;
+  const step = bucketSec * 1000;
+  const byTime = new Map(points.map((p) => [Date.parse(p.t), p]));
+  const out: T[] = [];
+  for (let ms = Math.floor((nowMs - minutes * 60_000) / step) * step; ms <= nowMs; ms += step) {
+    out.push(byTime.get(ms) ?? empty(new Date(ms).toISOString()));
+  }
+  return out;
+}
+
 export function timelineFromEvents(events: SyslogEvent[], bucketSec: number): FacetTimelinePoint[] {
   const cats = Object.values(KIND_CATEGORY);
   const map = new Map<string, FacetTimelinePoint>();
   for (const e of events) {
     if (e.action === 'system' || !cats.includes(e.categoryName)) continue;
-    const ms = Date.parse(e.ingestedAt || e.timestamp || '');
+    const ms = resolveEventTimeMs(e);
     if (!Number.isFinite(ms)) continue;
     const t = new Date(Math.floor(ms / (bucketSec * 1000)) * bucketSec * 1000).toISOString();
     const p = map.get(t) ?? { t, allowed: 0, blocked: 0 };

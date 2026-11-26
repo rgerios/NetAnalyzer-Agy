@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Network, ShieldCheck, Waves } from 'lucide-react';
 import type { FacetReport } from '../../shared/awsFacets.ts';
 import type { HttpInsights } from '../../shared/httpInsights.ts';
@@ -141,11 +141,24 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
   const [http, setHttp] = useState<HttpInsights | null>(null);
   const [conn, setConn] = useState<FacetReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [autoTick, setAutoTick] = useState(0);
+  const lastTick = useRef(0);
+
+  // O período é relativo a "agora": atualiza o painel a cada minuto enquanto a aba está visível
+  useEffect(() => {
+    if (tab !== 'panel') return;
+    const id = setInterval(() => {
+      if (!document.hidden) setAutoTick((n) => n + 1);
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [tab]);
 
   useEffect(() => {
     if (tab !== 'panel') return;
     let alive = true;
-    setLoading(true);
+    // A atualização automática é silenciosa, sem piscar o indicador de carregamento
+    if (lastTick.current === autoTick) setLoading(true);
+    lastTick.current = autoTick;
     const url = resource === 'alb' ? `/cloud/http-insights?minutes=${minutes}` : `/cloud/facets?kind=${resource}&minutes=${minutes}`;
     if (resource === 'alb') {
       fetch(vendorApiUrl(vendor, `/cloud/facets?kind=albconn&minutes=${minutes}`))
@@ -169,7 +182,7 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
     return () => {
       alive = false;
     };
-  }, [vendor, resource, minutes, refreshToken, tab]);
+  }, [vendor, resource, minutes, refreshToken, tab, autoTick]);
 
   const connEvents = conn?.totals.events ?? 0;
   const empty = resource === 'alb' ? (!http || http.requests === 0) && connEvents === 0 : !facets || facets.totals.events === 0;
