@@ -1,8 +1,9 @@
-import { Bar, BarChart, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { HttpEndpointRow, HttpInsights } from '../../shared/httpInsights.ts';
 import { formatBytes } from '../../shared/destinations.ts';
 import { wellKnownService } from '../../shared/ports.ts';
 import { countryName, flagEmoji } from '../utils/countryNames.ts';
+import { AlbKpis, StatusDonut, TrafficChart } from './awsCharts.tsx';
 
 export function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'warn' | 'bad' }) {
   return (
@@ -181,34 +182,6 @@ function TimeBreakdown({ ins }: { ins: HttpInsights }) {
   );
 }
 
-function LatencyTimeline({ data }: { data: HttpInsights['timeline'] }) {
-  if (data.length === 0) return <p className="text-xs text-[var(--fw-text-muted)]">Sem dados no período.</p>;
-  const spanMs = data.length > 1 ? Date.parse(data[data.length - 1].t) - Date.parse(data[0].t) : 0;
-  const timeOnly = spanMs < 36 * 3_600_000;
-  const rows = data.map((p) => ({
-    t: new Date(p.t).toLocaleString('pt-BR', timeOnly ? { hour: '2-digit', minute: '2-digit' } : { day: '2-digit', hour: '2-digit', minute: '2-digit' }),
-    req: p.requests - p.errors5xx,
-    err: p.errors5xx,
-    app: p.avgTargetMs,
-  }));
-  return (
-    <div style={{ height: 190 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={rows} margin={{ left: 0, right: 0, top: 4, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--fw-border)" vertical={false} />
-          <XAxis dataKey="t" tick={{ fontSize: 10 }} />
-          <YAxis yAxisId="l" tick={{ fontSize: 10 }} width={38} />
-          <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={42} tickFormatter={(v) => `${v} ms`} />
-          <Tooltip formatter={(v, n) => [n === 'app' ? `${v} ms` : Number(v).toLocaleString('pt-BR'), n === 'app' ? 'Tempo médio da aplicação' : n === 'err' ? 'Erros 5xx' : 'Requisições']} />
-          <Bar yAxisId="l" dataKey="req" stackId="a" fill="#0972D3" fillOpacity={0.55} />
-          <Bar yAxisId="l" dataKey="err" stackId="a" fill="#D13212" />
-          <Line yAxisId="r" type="monotone" dataKey="app" stroke="#FF9900" strokeWidth={2} dot={false} />
-        </ComposedChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
 function SlowRequestsTable({ rows }: { rows: HttpInsights['slowRequests'] }) {
   return (
     <div className="overflow-auto">
@@ -258,13 +231,6 @@ function SlowRequestsTable({ rows }: { rows: HttpInsights['slowRequests'] }) {
 
 /** Análise de aplicação dos access logs do ALB: status, latência, endpoints, clientes, TLS, WAF e targets. */
 export function HttpInsightsSection({ ins }: { ins: HttpInsights }) {
-  const errPct = ins.requests > 0 ? (ins.status.s5xx / ins.requests) * 100 : 0;
-  const classes = [
-    { label: '2xx', value: ins.status.s2xx, color: '#0f766e' },
-    { label: '3xx', value: ins.status.s3xx, color: '#38bdf8' },
-    { label: '4xx', value: ins.status.s4xx, color: '#f59e0b' },
-    { label: '5xx', value: ins.status.s5xx, color: '#ef4444' },
-  ].filter((c) => c.value > 0);
   return (
     <div className="space-y-4" aria-label="Análise de aplicação (ALB)">
       <div>
@@ -276,19 +242,7 @@ export function HttpInsightsSection({ ins }: { ins: HttpInsights }) {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Stat label="Requisições" value={nf(ins.requests)} sub={`${nf(ins.hosts.length)} host(s)`} />
-        <Stat
-          label="Erros 5xx"
-          value={`${errPct.toFixed(2)}%`}
-          sub={`${nf(ins.status.s5xx)} · 4xx: ${nf(ins.status.s4xx)}`}
-          tone={errPct >= 5 ? 'bad' : errPct >= 1 ? 'warn' : undefined}
-        />
-        <Stat
-          label="Latência p95"
-          value={fmtMs(ins.latency.p95Ms)}
-          sub={`média ${fmtMs(ins.latency.avgMs)} · p50 ${fmtMs(ins.latency.p50Ms)} · p99 ${fmtMs(ins.latency.p99Ms)} · máx. ${fmtMs(ins.latency.maxMs)}`}
-          tone={ins.latency.p95Ms >= 5000 ? 'bad' : ins.latency.p95Ms >= 2000 ? 'warn' : undefined}
-        />
+        <AlbKpis ins={ins} />
         <Stat
           label="WAF"
           value={nf(ins.waf.blocked)}
@@ -298,7 +252,11 @@ export function HttpInsightsSection({ ins }: { ins: HttpInsights }) {
         <Stat label="Tráfego HTTP" value={formatBytes(ins.bytes.in + ins.bytes.out)} sub={`↑ ${formatBytes(ins.bytes.in)} · ↓ ${formatBytes(ins.bytes.out)}`} />
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-4">
+      <HttpPanel title="Volume, erros 5xx e latência no tempo">
+        <TrafficChart data={ins.timeline} height={280} />
+      </HttpPanel>
+
+      <div className="grid lg:grid-cols-2 gap-4">
         <HttpPanel title="Onde o tempo é gasto">
           <TimeBreakdown ins={ins} />
         </HttpPanel>
@@ -307,25 +265,11 @@ export function HttpInsightsSection({ ins }: { ins: HttpInsights }) {
           <BarList rows={ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 }))} />
           <p className="mt-3 text-[11px] text-[var(--fw-text-muted)]">Tempo total = envio pelo cliente + aplicação + resposta. Faixas a partir de 2 s em vermelho.</p>
         </HttpPanel>
-        <HttpPanel title="Volume e latência da aplicação no tempo">
-          <LatencyTimeline data={ins.timeline} />
-        </HttpPanel>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4">
         <HttpPanel title="Status HTTP">
-          <div className="flex h-3 rounded overflow-hidden bg-[var(--fw-border)]" role="img" aria-label="Distribuição de status">
-            {classes.map((c) => (
-              <div key={c.label} title={`${c.label}: ${nf(c.value)}`} style={{ width: `${(c.value / Math.max(1, ins.requests)) * 100}%`, background: c.color }} />
-            ))}
-          </div>
-          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--fw-text-muted)]">
-            {classes.map((c) => (
-              <span key={c.label} className="inline-flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full" style={{ background: c.color }} /> {c.label} {nf(c.value)}
-              </span>
-            ))}
-          </div>
+          <StatusDonut ins={ins} />
           <div className="mt-3">
             <BarList rows={ins.status.top.map((s) => ({ label: s.code, value: s.count, bad: s.code.startsWith('5') }))} />
           </div>
