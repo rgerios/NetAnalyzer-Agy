@@ -289,7 +289,9 @@ describe('leitura do CloudWatch Logs', () => {
   });
 
   it('o teste da fonte reconhece o formato; sem eventos mostra os streams existentes', async () => {
-    const ok = fakeLogs(() => [{ events: [ev('e1', '2026-11-24T11:05:00.000Z', ACCESS)] }]);
+    // o teste da fonte busca em relação ao relógio real: o evento precisa ser recente
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    const ok = fakeLogs(() => [{ events: [ev('e1', recent, ACCESS)] }]);
     const good = await testCloudWatchSource(ok.client, cwSource());
     assert.equal(good.ok, true);
     assert.equal(good.sampleEvents, 1);

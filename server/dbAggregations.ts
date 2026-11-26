@@ -328,67 +328,74 @@ export async function aggregateHttpInsightsDb(
   timedOut: boolean;
 }> {
   const timeoutMs = Math.max(5000, Number(process.env.REPORT_QUERY_TIMEOUT_MS) || 60_000);
-  const m = (key: string) => `COALESCE(payload_json#>>'{meta,${key}}', '')`;
-  const sec = (key: string) => `COALESCE(NULLIF(payload_json#>>'{meta,${key}}', '')::numeric, 0)`;
-  const total = sec('totalTime');
-  const bytes = (key: string) => `COALESCE(NULLIF(payload_json->>'${key}', '')::numeric, 0)`;
-  const histCols = (expr: string, prefix: string) =>
+  const histCols = (column: string, prefix: string) =>
     [
-      `count(*) FILTER (WHERE ${expr} < 0.05)::bigint AS ${prefix}0`,
-      `count(*) FILTER (WHERE ${expr} >= 0.05 AND ${expr} < 0.1)::bigint AS ${prefix}1`,
-      `count(*) FILTER (WHERE ${expr} >= 0.1 AND ${expr} < 0.25)::bigint AS ${prefix}2`,
-      `count(*) FILTER (WHERE ${expr} >= 0.25 AND ${expr} < 0.5)::bigint AS ${prefix}3`,
-      `count(*) FILTER (WHERE ${expr} >= 0.5 AND ${expr} < 1)::bigint AS ${prefix}4`,
-      `count(*) FILTER (WHERE ${expr} >= 1 AND ${expr} < 2)::bigint AS ${prefix}5`,
-      `count(*) FILTER (WHERE ${expr} >= 2 AND ${expr} < 5)::bigint AS ${prefix}6`,
-      `count(*) FILTER (WHERE ${expr} >= 5)::bigint AS ${prefix}7`,
+      `count(*) FILTER (WHERE ${column} < 0.05) AS ${prefix}0`,
+      `count(*) FILTER (WHERE ${column} >= 0.05 AND ${column} < 0.1) AS ${prefix}1`,
+      `count(*) FILTER (WHERE ${column} >= 0.1 AND ${column} < 0.25) AS ${prefix}2`,
+      `count(*) FILTER (WHERE ${column} >= 0.25 AND ${column} < 0.5) AS ${prefix}3`,
+      `count(*) FILTER (WHERE ${column} >= 0.5 AND ${column} < 1) AS ${prefix}4`,
+      `count(*) FILTER (WHERE ${column} >= 1 AND ${column} < 2) AS ${prefix}5`,
+      `count(*) FILTER (WHERE ${column} >= 2 AND ${column} < 5) AS ${prefix}6`,
+      `count(*) FILTER (WHERE ${column} >= 5) AS ${prefix}7`,
     ].join(', ');
   const readHist = (r: Record<string, unknown>, prefix: string) =>
     Array.from({ length: 8 }, (_, i) => Number(r[`${prefix}${i}`] ?? 0));
+  const text = (key: string) => `COALESCE(m."${key}", '') AS "${key}"`;
+  const num = (key: string) => `COALESCE(NULLIF(m."${key}", '')::numeric, 0) AS "${key}"`;
+  const bytes = (key: string) => `COALESCE(NULLIF(payload_json->>'${key}', '')::numeric, 0) AS "${key}"`;
+  const textKeys = ['host', 'method', 'path', 'pathGroup', 'status', 'targetIp', 'targetGroup', 'wafActions', 'uaFamily', 'tlsVersion', 'tlsCipher', 'tlsReused', 'traceId'];
+  const numKeys = ['totalTime', 'reqTime', 'targetTime', 'respTime'];
   const where = `site_id = $1 AND event_at >= $2 AND action <> 'system' AND payload_json#>>'{meta,method}' IS NOT NULL AND payload_json->>'categoryName' = 'Application Load Balancer'`;
   const bs = Math.max(1, Math.floor(bucketSec));
   const client = await pool.connect();
   try {
     await client.query('BEGIN READ ONLY');
     await client.query(`SET LOCAL statement_timeout = ${Math.floor(timeoutMs)}`);
-    const g = await client.query(
-      `SELECT ${m('host')} AS host, ${m('method')} AS method,
-              COALESCE(NULLIF(payload_json#>>'{meta,pathGroup}', ''), ${m('path')}) AS path,
-              ${m('status')} AS status, ${m('targetIp')} AS target, ${m('targetGroup')} AS tgroup, ${m('wafActions')} AS waf,
-              count(*)::bigint AS c, sum(${total}) AS st, max(${total}) AS mx,
-              count(*) FILTER (WHERE ${total} >= 2)::bigint AS slow,
-              sum(${bytes('bytesSent')})::bigint AS up, sum(${bytes('bytesRcvd')})::bigint AS down,
-              sum(${sec('reqTime')}) AS sreq, sum(${sec('targetTime')}) AS stgt, sum(${sec('respTime')}) AS sresp,
-              count(*) FILTER (WHERE ${sec('reqTime')} >= 1)::bigint AS cslow,
-              ${histCols(total, 'h')}, ${histCols(sec('targetTime'), 't')}
-         FROM syslogs WHERE ${where}
-        GROUP BY 1,2,3,4,5,6,7 ORDER BY c DESC LIMIT $3`,
+    // Uma única leitura do período, com cada campo do JSON extraído uma vez por linha. Antes eram quatro
+    // leituras, e os histogramas repetiam a extração e a conversão do mesmo tempo em cada faixa.
+    const q = await client.query(
+      `WITH base AS MATERIALIZED (
+         SELECT event_at, payload_json->>'srcIp' AS client, ${bytes('bytesSent')}, ${bytes('bytesRcvd')},
+                ${[...textKeys.map(text), ...numKeys.map(num)].join(', ')}
+           FROM syslogs
+          CROSS JOIN LATERAL jsonb_to_record(payload_json->'meta') AS m(${[...textKeys, ...numKeys].map((k) => `"${k}" text`).join(', ')})
+          WHERE ${where}
+       )
+       SELECT
+         (SELECT COALESCE(json_agg(x ORDER BY x.c DESC), '[]'::json) FROM (
+            SELECT host, method, COALESCE(NULLIF("pathGroup", ''), path) AS path, status, "targetIp" AS target,
+                   "targetGroup" AS tgroup, "wafActions" AS waf,
+                   count(*) AS c, sum("totalTime") AS st, max("totalTime") AS mx,
+                   count(*) FILTER (WHERE "totalTime" >= 2) AS slow,
+                   sum("bytesSent")::bigint AS up, sum("bytesRcvd")::bigint AS down,
+                   sum("reqTime") AS sreq, sum("targetTime") AS stgt, sum("respTime") AS sresp,
+                   count(*) FILTER (WHERE "reqTime" >= 1) AS cslow,
+                   ${histCols('"totalTime"', 'h')}, ${histCols('"targetTime"', 't')}
+              FROM base GROUP BY 1,2,3,4,5,6,7 ORDER BY c DESC LIMIT $3) x) AS groups,
+         (SELECT COALESCE(json_agg(x ORDER BY x.c DESC), '[]'::json) FROM (
+            SELECT "uaFamily" AS ua, "tlsVersion" AS tls, "tlsCipher" AS cipher,
+                   count(*) AS c, count(*) FILTER (WHERE status ~ '^5') AS errors
+              FROM base GROUP BY 1,2,3 ORDER BY c DESC LIMIT 5000) x) AS clients,
+         (SELECT COALESCE(json_agg(x ORDER BY x.epoch), '[]'::json) FROM (
+            SELECT floor(extract(epoch FROM event_at) / ${bs}) * ${bs} AS epoch, count(*) AS c,
+                   count(*) FILTER (WHERE status ~ '^5') AS e5, sum("targetTime") AS stgt, max("totalTime") AS mx,
+                   count(*) FILTER (WHERE "tlsReused" = 'true') AS reused, ${histCols('"totalTime"', 'h')}
+              FROM base GROUP BY 1) x) AS timeline,
+         (SELECT COALESCE(json_agg(x ORDER BY x.total DESC), '[]'::json) FROM (
+            SELECT event_at, method, host, path, client, status, "totalTime" AS total, "reqTime" AS req,
+                   "targetTime" AS tgt, "targetIp" AS target, "traceId" AS trace
+              FROM base ORDER BY "totalTime" DESC LIMIT 10) x) AS slow`,
       [siteId, sinceIso, groupLimit + 1]
     );
-    const c = await client.query(
-      `SELECT ${m('uaFamily')} AS ua, ${m('tlsVersion')} AS tls, ${m('tlsCipher')} AS cipher,
-              count(*)::bigint AS c, count(*) FILTER (WHERE ${m('status')} ~ '^5')::bigint AS errors
-         FROM syslogs WHERE ${where}
-        GROUP BY 1,2,3 ORDER BY c DESC LIMIT 5000`,
-      [siteId, sinceIso]
-    );
-    const tl = await client.query(
-      `SELECT to_timestamp(floor(extract(epoch FROM event_at) / ${bs}) * ${bs}) AS t, count(*)::bigint AS c,
-              count(*) FILTER (WHERE ${m('status')} ~ '^5')::bigint AS e5, sum(${sec('targetTime')}) AS stgt, max(${total}) AS mx,
-              count(*) FILTER (WHERE ${m('tlsReused')} = 'true')::bigint AS reused, ${histCols(total, 'h')}
-         FROM syslogs WHERE ${where} GROUP BY 1 ORDER BY 1`,
-      [siteId, sinceIso]
-    );
-    const sl = await client.query(
-      `SELECT event_at, ${m('method')} AS method, ${m('host')} AS host, ${m('path')} AS path, payload_json->>'srcIp' AS client,
-              ${m('status')} AS status, ${total} AS total, ${sec('reqTime')} AS req, ${sec('targetTime')} AS tgt,
-              ${m('targetIp')} AS target, ${m('traceId')} AS trace
-         FROM syslogs WHERE ${where} ORDER BY ${total} DESC LIMIT 10`,
-      [siteId, sinceIso]
-    );
+    type Row = Record<string, unknown>;
+    const groupRows = q.rows[0].groups as Row[];
+    const clientRows = q.rows[0].clients as Row[];
+    const timelineRows = q.rows[0].timeline as Row[];
+    const slowRows = q.rows[0].slow as Row[];
     await client.query('COMMIT');
     return {
-      groups: g.rows.slice(0, groupLimit).map((r) => ({
+      groups: groupRows.slice(0, groupLimit).map((r) => ({
         host: String(r.host),
         method: String(r.method),
         path: String(r.path),
@@ -409,7 +416,7 @@ export async function aggregateHttpInsightsDb(
         hist: readHist(r, 'h'),
         tHist: readHist(r, 't'),
       })),
-      clients: c.rows.map((r) => ({
+      clients: clientRows.map((r) => ({
         ua: String(r.ua),
         tls: String(r.tls),
         cipher: String(r.cipher),
@@ -417,8 +424,8 @@ export async function aggregateHttpInsightsDb(
         errors: Number(r.errors),
       })),
       extras: {
-        slowRequests: sl.rows.map((r) => ({
-          at: new Date(r.event_at).toISOString(),
+        slowRequests: slowRows.map((r) => ({
+          at: new Date(String(r.event_at)).toISOString(),
           method: String(r.method),
           host: String(r.host),
           path: String(r.path),
@@ -430,17 +437,17 @@ export async function aggregateHttpInsightsDb(
           targetIp: String(r.target),
           traceId: String(r.trace),
         })),
-        timeline: tl.rows.map((r) => ({
-          t: new Date(r.t).toISOString(),
+        timeline: timelineRows.map((r) => ({
+          t: new Date(Number(r.epoch) * 1000).toISOString(),
           requests: Number(r.c),
           errors5xx: Number(r.e5),
           sumTgt: Number(r.stgt ?? 0),
           maxTime: Number(r.mx ?? 0),
           hist: readHist(r, 'h'),
         })),
-        tlsReused: tl.rows.reduce((n, r) => n + Number(r.reused ?? 0), 0),
+        tlsReused: timelineRows.reduce((n: number, r) => n + Number(r.reused ?? 0), 0),
       },
-      capped: g.rows.length > groupLimit,
+      capped: groupRows.length > groupLimit,
       timedOut: false,
     };
   } catch (err) {
