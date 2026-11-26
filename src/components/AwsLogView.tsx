@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Network, ShieldCheck, Tv, Waves } from 'lucide-react';
 import type { FacetReport } from '../../shared/awsFacets.ts';
 import type { HttpInsights } from '../../shared/httpInsights.ts';
-import { formatBytes } from '../../shared/destinations.ts';
 import type { FirewallVendor } from '../types.ts';
 import { vendorApiUrl } from '../utils/vendorApi.ts';
-import { FacetsGrid, HttpInsightsSection, PageHeader, PeriodSelector, Stat, TimelineChart, HttpPanel, nf } from './awsParts.tsx';
-import { AlbTvMode } from './AlbTvMode.tsx';
+import { FacetsGrid, HttpInsightsSection, PageHeader, PeriodSelector, Stat, HttpPanel, nf } from './awsParts.tsx';
+import { AlbTvMode, FlowTvMode } from './AwsTvMode.tsx';
+import { FlowChart, FlowDonut, FlowKpis, FLOW_LABELS } from './awsCharts.tsx';
 import { SyslogView } from './SyslogView.tsx';
 import { RISK_STYLE, SECRET_INFO } from '../../shared/awsSecrets.ts';
 
@@ -200,8 +200,7 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
           tab === 'panel' ? (
             <div className="flex items-center gap-2">
               <PeriodSelector minutes={minutes} onChange={setMinutes} />
-              {resource === 'alb' && (
-                <button
+              <button
                   type="button"
                   onClick={() => {
                     setTv(true);
@@ -212,7 +211,6 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
                 >
                   <Tv className="w-3.5 h-3.5" aria-hidden="true" /> Modo TV
                 </button>
-              )}
             </div>
           ) : undefined
         }
@@ -232,6 +230,7 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
       </div>
 
       {tv && resource === 'alb' && <AlbTvMode ins={http} error={error} minutes={minutes} onMinutes={setMinutes} onClose={closeTv} />}
+      {tv && resource !== 'alb' && <FlowTvMode kind={resource} report={facets} error={error} minutes={minutes} onMinutes={setMinutes} onClose={closeTv} />}
 
       {tab === 'events' && (
         <SyslogView
@@ -270,27 +269,18 @@ export function AwsLogView({ vendor, resource, refreshToken, onDataChanged, onAn
           {resource !== 'alb' && facets && facets.totals.events > 0 && (
             <>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <Stat label="Eventos" value={nf(facets.totals.events)} />
-                <Stat
-                  label={resource === 'waf' ? 'Bloqueados' : 'Rejeitados'}
-                  value={nf(facets.totals.blocked)}
-                  sub={`${((facets.totals.blocked / Math.max(1, facets.totals.events)) * 100).toFixed(1)}% do total`}
-                  tone={facets.totals.blocked > 0 ? 'bad' : undefined}
-                />
-                <Stat label={resource === 'waf' ? 'Permitidos' : 'Aceitos'} value={nf(facets.totals.allowed)} />
-                {resource === 'vpcflow' ? (
-                  <Stat label="Volume" value={formatBytes(facets.totals.bytes)} sub={`${nf(facets.totals.packets)} pacotes`} />
-                ) : (
-                  <Stat label="Fonte dos dados" value={facets.dataSource === 'database' ? 'Banco' : 'Memória'} />
-                )}
+                <FlowKpis report={facets} kind={resource} />
               </div>
-              <HttpPanel title="Linha do tempo">
-                <TimelineChart
-                  data={facets.timeline}
-                  okLabel={resource === 'waf' ? 'Permitidos' : 'Aceitos'}
-                  badLabel={resource === 'waf' ? 'Bloqueados' : 'Rejeitados'}
-                />
-              </HttpPanel>
+              <div className="grid lg:grid-cols-3 gap-4">
+                <HttpPanel title="Linha do tempo" wide>
+                  <FlowChart data={facets.timeline} kind={resource} height={280} />
+                </HttpPanel>
+                <HttpPanel title={`${FLOW_LABELS[resource].ok} e ${FLOW_LABELS[resource].bad.toLowerCase()}`}>
+                  <div className="h-full grid content-center">
+                    <FlowDonut report={facets} kind={resource} />
+                  </div>
+                </HttpPanel>
+              </div>
               {resource === 'waf' && <SecretsPanel facets={facets.facets} />}
               <FacetsGrid facets={facets.facets.filter((f) => !f.id.startsWith('sec'))} />
             </>

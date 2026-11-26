@@ -39,6 +39,7 @@ needs — without sending a single log to a third-party service.
 | 📊 **Know who consumes what** | Bandwidth per IP, category, country and destination. |
 | 🧪 **Debug packet captures** | Upload `.pcap` / `.pcapng` and filter with Wireshark-style expressions; get probable causes automatically. |
 | ☁️ **Read your AWS logs** | VPC Flow Logs, AWS WAF and ALB straight from S3, in the same views as the firewalls. |
+| 📺 **Watch it on the wall** | TV mode for ALB, VPC Flow Logs and WAF, with trends, donuts and rankings. |
 | 🚨 **Alerts that matter** | Anomaly spikes, IPS/malware events, scans, link saturation, license and sync problems. |
 | 📑 **Hand over reports** | Audit report and Access & Consumption report, scheduled, static HTML, PDF and CSV. |
 | 🔒 **Stay private** | Self-hosted. GeoIP, ASN and reputation lists run **offline**. |
@@ -111,13 +112,42 @@ Read your cloud logs straight from **S3 or CloudWatch Logs** and see them in the
 
 <img src="docs/screenshots/aws-overview.png" alt="AWS overview" width="100%">
 
+### 📺 TV mode: your cloud on one screen
+
+One click on **TV mode** (*Modo TV*) turns the **ALB**, **VPC Flow Logs** or **WAF** dashboard into a NOC wall screen: full screen, dark theme, a clock and what matters in sight.
+
+<img src="docs/screenshots/aws-tv-alb.png" alt="ALB TV mode: requests, 5xx errors, p95 latency, HTTP status, endpoints, targets and time distribution" width="100%">
+
 <table>
 <tr>
-<td width="33%"><b>ALB</b><br><img src="docs/screenshots/aws-alb.png" alt="ALB"></td>
-<td width="33%"><b>VPC Flow Logs</b><br><img src="docs/screenshots/aws-vpcflow.png" alt="VPC Flow Logs"></td>
-<td width="33%"><b>WAF Logs Insight</b><br><img src="docs/screenshots/aws-waf.png" alt="WAF Logs Insight"></td>
+<td width="50%"><b>WAF</b> — what was blocked, by which rule, from where<br><img src="docs/screenshots/aws-tv-waf.png" alt="AWS WAF TV mode"></td>
+<td width="50%"><b>VPC Flow Logs</b> — rejections, targeted ports and consumption<br><img src="docs/screenshots/aws-tv-vpcflow.png" alt="VPC Flow Logs TV mode"></td>
 </tr>
 </table>
+
+- Data is fetched every **60 s** while the tab is visible; the screen warns when a request fails or the response is older than 3 minutes (this alone does not tell whether AWS collection has stopped).
+- Period selector (30 min to 6 h), full-screen button, `Esc` to leave, and a request to the browser to keep the display awake.
+
+### 📈 Dashboards that tell the story
+
+- **Trend cards:** period total, an area sparkline and the value of a recent interval, with its time.
+- **Dual-axis timeline:** on ALB, requests, 5xx errors and **p95 latency**; on WAF and VPC, allowed, blocked and **block/reject rate**.
+- **Donuts** for HTTP status and decisions (allowed vs blocked), with counts and percentages.
+- The axis covers exactly the selected period, up to now.
+
+**Application Load Balancer:** where it is slow, what fails and who is affected.
+
+<img src="docs/screenshots/aws-alb.png" alt="ALB dashboard" width="100%">
+
+**AWS WAF:** when the attack happened, which rules reacted and where it came from.
+
+<img src="docs/screenshots/aws-waf.png" alt="AWS WAF dashboard" width="100%">
+
+**VPC Flow Logs:** what the Security Group and NACL accepted and rejected.
+
+<img src="docs/screenshots/aws-vpcflow.png" alt="VPC Flow Logs dashboard" width="100%">
+
+> The overview, the three dashboards and TV mode screenshots use **fictitious demo data** (the UI is in Portuguese).
 
 <table>
 <tr>
@@ -245,6 +275,7 @@ Everything generic is available wherever it makes sense; only API- or log-specif
 | **Behavior** (world map + heatmap, offline intel) | ✅ | ✅ | ✅ |
 | **Access & Consumption** report + scheduler | ✅ | ✅ | ✅ |
 | **PCAP analysis** | ✅ | ✅ | ✅ |
+| **TV mode** and trend charts (ALB, VPC Flow Logs, WAF) | — | — | ✅ |
 | Syslog receiver (UDP) | ✅ `5514` | ✅ `5515` | — |
 | Pull from S3 (Flow Logs, WAF, ALB) | — | — | ✅ |
 | Unused rules / NATs, audit report | ✅ | ✅ (VIPs) | — |

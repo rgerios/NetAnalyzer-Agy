@@ -70,7 +70,8 @@ export function EndpointTable({ rows, cols }: { rows: HttpEndpointRow[]; cols: A
   );
 }
 
-export function BarList({ rows }: { rows: Array<{ label: string; value: number; sub?: string; bad?: boolean }> }) {
+/** `text` substitui o número exibido (ex.: bytes formatados); a barra continua proporcional a `value`. */
+export function BarList({ rows }: { rows: Array<{ label: string; value: number; text?: string; sub?: string; bad?: boolean }> }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   if (rows.length === 0) return <p className="text-xs text-[var(--fw-text-muted)]">Sem dados no período.</p>;
   return (
@@ -82,7 +83,7 @@ export function BarList({ rows }: { rows: Array<{ label: string; value: number; 
               {r.label}
             </span>
             <span className="text-[var(--fw-text-muted)] tabular-nums whitespace-nowrap">
-              {nf(r.value)}
+              {r.text ?? nf(r.value)}
               {r.sub ? ` · ${r.sub}` : ''}
             </span>
           </div>
@@ -261,7 +262,9 @@ export function HttpInsightsSection({ ins }: { ins: HttpInsights }) {
           <TimeBreakdown ins={ins} />
         </HttpPanel>
         <HttpPanel title="Distribuição do tempo total">
-          <LatencyPyramid rows={ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 }))} />
+          <div className="max-w-sm mx-auto">
+            <LatencyPyramid rows={ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 }))} />
+          </div>
           <BarList rows={ins.distribution.map((d, i) => ({ label: d.label, value: d.requests, bad: i >= 6 }))} />
           <p className="mt-3 text-[11px] text-[var(--fw-text-muted)]">Tempo total = envio pelo cliente + aplicação + resposta. Faixas a partir de 2 s em vermelho.</p>
         </HttpPanel>
@@ -449,7 +452,7 @@ export function TimelineChart({
 
 import type { FacetItem, FacetResult } from '../../shared/awsFacets.ts';
 
-function facetLabel(f: FacetResult, it: FacetItem): string {
+export function facetLabel(f: FacetResult, it: FacetItem): string {
   if (f.country) return `${flagEmoji(it.key)} ${countryName(it.key)}`.trim();
   if (f.ip) return `${it.country ? `${flagEmoji(it.country)} ` : ''}${it.key}`;
   if (f.port) {
